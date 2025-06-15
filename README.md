@@ -42,7 +42,7 @@ This project is currently in early development and not yet published on crates.i
 
 ```toml
 [dependencies]
-sigma-engine = { git = "https://github.com/cawalc/sigma-engine.git" }
+sigma-engine = { git = "https://github.com/cawalch/sigma-engine.git" }
 ```
 
 For examples and demos, you can enable the `examples` feature:
