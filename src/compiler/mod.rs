@@ -277,8 +277,16 @@ impl Compiler {
     fn extract_rule_id_from_yaml(&self, yaml_doc: &Value) -> RuleId {
         yaml_doc
             .get("id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.parse::<RuleId>().unwrap_or(0))
+            .and_then(|v| {
+                // Try as number first, then as string
+                if let Some(n) = v.as_u64() {
+                    Some(n as RuleId)
+                } else if let Some(s) = v.as_str() {
+                    s.parse::<RuleId>().ok()
+                } else {
+                    None
+                }
+            })
             .unwrap_or(0)
     }
 
@@ -460,5 +468,402 @@ impl Compiler {
 impl Default for Compiler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_yaml::Value;
+
+    #[test]
+    fn test_compiler_new() {
+        let compiler = Compiler::new();
+        assert_eq!(compiler.primitive_count(), 0);
+        assert_eq!(compiler.field_mapping().taxonomy(), "sigma");
+        assert_eq!(compiler.primitives().len(), 0);
+        assert_eq!(compiler.current_selection_map().len(), 0);
+    }
+
+    #[test]
+    fn test_compiler_with_field_mapping() {
+        let field_mapping = FieldMapping::with_taxonomy("custom".to_string());
+        let compiler = Compiler::with_field_mapping(field_mapping);
+        assert_eq!(compiler.field_mapping().taxonomy(), "custom");
+    }
+
+    #[test]
+    fn test_compiler_default() {
+        let compiler = Compiler::default();
+        assert_eq!(compiler.primitive_count(), 0);
+        assert_eq!(compiler.field_mapping().taxonomy(), "sigma");
+    }
+
+    #[test]
+    fn test_field_mapping_mut() {
+        let mut compiler = Compiler::new();
+        compiler
+            .field_mapping_mut()
+            .add_mapping("Event_ID".to_string(), "EventID".to_string());
+        assert!(compiler.field_mapping().has_mapping("Event_ID"));
+    }
+
+    #[test]
+    fn test_into_ruleset() {
+        let compiler = Compiler::new();
+        let chunk = crate::ir::BytecodeChunk::new(1, vec![crate::ir::Opcode::PushMatch(0)]);
+        let ruleset = compiler.into_ruleset(vec![chunk]);
+        assert_eq!(ruleset.chunks.len(), 1);
+    }
+
+    #[test]
+    fn test_into_empty_ruleset() {
+        let compiler = Compiler::new();
+        let ruleset = compiler.into_empty_ruleset();
+        assert_eq!(ruleset.chunks.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_field_with_modifiers_simple() {
+        let compiler = Compiler::new();
+        let (field, match_type, modifiers) = compiler.parse_field_with_modifiers("Image");
+        assert_eq!(field, "Image");
+        assert_eq!(match_type, "equals");
+        assert_eq!(modifiers.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_field_with_modifiers_contains() {
+        let compiler = Compiler::new();
+        let (field, match_type, modifiers) =
+            compiler.parse_field_with_modifiers("CommandLine|contains");
+        assert_eq!(field, "CommandLine");
+        assert_eq!(match_type, "contains");
+        assert_eq!(modifiers.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_field_with_modifiers_startswith() {
+        let compiler = Compiler::new();
+        let (field, match_type, modifiers) =
+            compiler.parse_field_with_modifiers("Image|startswith");
+        assert_eq!(field, "Image");
+        assert_eq!(match_type, "startswith");
+        assert_eq!(modifiers.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_field_with_modifiers_endswith() {
+        let compiler = Compiler::new();
+        let (field, match_type, modifiers) = compiler.parse_field_with_modifiers("Image|endswith");
+        assert_eq!(field, "Image");
+        assert_eq!(match_type, "endswith");
+        assert_eq!(modifiers.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_field_with_modifiers_regex() {
+        let compiler = Compiler::new();
+        let (field, match_type, modifiers) = compiler.parse_field_with_modifiers("Hash|re");
+        assert_eq!(field, "Hash");
+        assert_eq!(match_type, "regex");
+        assert_eq!(modifiers.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_field_with_modifiers_cased() {
+        let compiler = Compiler::new();
+        let (field, match_type, modifiers) = compiler.parse_field_with_modifiers("User|cased");
+        assert_eq!(field, "User");
+        assert_eq!(match_type, "equals");
+        assert_eq!(modifiers, vec!["case_sensitive"]);
+    }
+
+    #[test]
+    fn test_parse_field_with_modifiers_base64() {
+        let compiler = Compiler::new();
+        let (field, match_type, modifiers) = compiler.parse_field_with_modifiers("Data|base64");
+        assert_eq!(field, "Data");
+        assert_eq!(match_type, "equals");
+        assert_eq!(modifiers, vec!["base64_decode"]);
+    }
+
+    #[test]
+    fn test_parse_field_with_modifiers_multiple() {
+        let compiler = Compiler::new();
+        let (field, match_type, modifiers) =
+            compiler.parse_field_with_modifiers("Data|contains|base64|cased");
+        assert_eq!(field, "Data");
+        assert_eq!(match_type, "contains");
+        assert_eq!(modifiers, vec!["base64_decode", "case_sensitive"]);
+    }
+
+    #[test]
+    fn test_parse_field_with_modifiers_unknown() {
+        let compiler = Compiler::new();
+        let (field, match_type, modifiers) =
+            compiler.parse_field_with_modifiers("Field|unknown_modifier");
+        assert_eq!(field, "Field");
+        assert_eq!(match_type, "equals");
+        assert_eq!(modifiers, vec!["unknown_modifier"]);
+    }
+
+    #[test]
+    fn test_parse_field_with_modifiers_utf16_variants() {
+        let compiler = Compiler::new();
+
+        let (_, _, modifiers) = compiler.parse_field_with_modifiers("Data|utf16");
+        assert_eq!(modifiers, vec!["utf16_decode"]);
+
+        let (_, _, modifiers) = compiler.parse_field_with_modifiers("Data|utf16le");
+        assert_eq!(modifiers, vec!["utf16le_decode"]);
+
+        let (_, _, modifiers) = compiler.parse_field_with_modifiers("Data|utf16be");
+        assert_eq!(modifiers, vec!["utf16be_decode"]);
+
+        let (_, _, modifiers) = compiler.parse_field_with_modifiers("Data|wide");
+        assert_eq!(modifiers, vec!["wide_decode"]);
+
+        let (_, _, modifiers) = compiler.parse_field_with_modifiers("Data|base64offset");
+        assert_eq!(modifiers, vec!["base64_offset_decode"]);
+    }
+
+    #[test]
+    fn test_extract_rule_id_from_yaml() {
+        let compiler = Compiler::new();
+
+        // Test with valid ID
+        let yaml_str = r#"
+        id: 12345
+        title: Test Rule
+        "#;
+        let yaml_doc: Value = serde_yaml::from_str(yaml_str).unwrap();
+        let rule_id = compiler.extract_rule_id_from_yaml(&yaml_doc);
+        assert_eq!(rule_id, 12345);
+
+        // Test with no ID
+        let yaml_str = r#"
+        title: Test Rule
+        "#;
+        let yaml_doc: Value = serde_yaml::from_str(yaml_str).unwrap();
+        let rule_id = compiler.extract_rule_id_from_yaml(&yaml_doc);
+        assert_eq!(rule_id, 0);
+
+        // Test with invalid ID
+        let yaml_str = r#"
+        id: "not_a_number"
+        title: Test Rule
+        "#;
+        let yaml_doc: Value = serde_yaml::from_str(yaml_str).unwrap();
+        let rule_id = compiler.extract_rule_id_from_yaml(&yaml_doc);
+        assert_eq!(rule_id, 0);
+    }
+
+    #[test]
+    fn test_compile_rule_missing_detection() {
+        let mut compiler = Compiler::new();
+        let rule_yaml = r#"
+        title: Test Rule
+        logsource:
+            category: test
+        "#;
+
+        let result = compiler.compile_rule(rule_yaml);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("Missing detection section"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_compile_rule_missing_condition() {
+        let mut compiler = Compiler::new();
+        let rule_yaml = r#"
+        title: Test Rule
+        detection:
+            selection:
+                EventID: 4624
+        "#;
+
+        let result = compiler.compile_rule(rule_yaml);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("Missing condition"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_compile_rule_with_number_values() {
+        let mut compiler = Compiler::new();
+        let rule_yaml = r#"
+        title: Test Rule
+        detection:
+            selection:
+                EventID: 4624
+                ProcessId: 1234
+                Score: 95.5
+            condition: selection
+        "#;
+
+        let result = compiler.compile_rule(rule_yaml);
+        assert!(result.is_ok());
+
+        let chunk = result.unwrap();
+        assert_eq!(chunk.rule_name, Some("Test Rule".to_string()));
+        assert_eq!(compiler.primitive_count(), 3); // EventID, ProcessId, Score
+    }
+
+    #[test]
+    fn test_compile_rule_with_sequence_values() {
+        let mut compiler = Compiler::new();
+        let rule_yaml = r#"
+        title: Test Rule
+        detection:
+            selection:
+                EventID:
+                    - 4624
+                    - 4625
+                    - 4634
+                ProcessName:
+                    - "cmd.exe"
+                    - "powershell.exe"
+            condition: selection
+        "#;
+
+        let result = compiler.compile_rule(rule_yaml);
+        assert!(result.is_ok());
+
+        let chunk = result.unwrap();
+        assert_eq!(chunk.rule_name, Some("Test Rule".to_string()));
+        assert_eq!(compiler.primitive_count(), 2); // EventID list, ProcessName list
+    }
+
+    #[test]
+    fn test_compile_rule_with_mixed_sequence() {
+        let mut compiler = Compiler::new();
+        let rule_yaml = r#"
+        title: Test Rule
+        detection:
+            selection:
+                EventID:
+                    - 4624
+                    - 4625
+                    - 95.5
+            condition: selection
+        "#;
+
+        let result = compiler.compile_rule(rule_yaml);
+        assert!(result.is_ok());
+
+        assert_eq!(compiler.primitive_count(), 1);
+    }
+
+    #[test]
+    fn test_compile_rule_invalid_field_value() {
+        let mut compiler = Compiler::new();
+        let rule_yaml = r#"
+        title: Test Rule
+        detection:
+            selection:
+                EventID:
+                    nested:
+                        invalid: structure
+            condition: selection
+        "#;
+
+        let result = compiler.compile_rule(rule_yaml);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("Unsupported field value type"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_get_or_create_primitive_id_deduplication() {
+        let mut compiler = Compiler::new();
+
+        let primitive1 = crate::ir::Primitive::new(
+            "EventID".to_string(),
+            "equals".to_string(),
+            vec!["4624".to_string()],
+            vec![],
+        );
+
+        let primitive2 = crate::ir::Primitive::new(
+            "EventID".to_string(),
+            "equals".to_string(),
+            vec!["4624".to_string()],
+            vec![],
+        );
+
+        let id1 = compiler.get_or_create_primitive_id(primitive1);
+        let id2 = compiler.get_or_create_primitive_id(primitive2);
+
+        assert_eq!(id1, id2); // Should be deduplicated
+        assert_eq!(compiler.primitive_count(), 1);
+    }
+
+    #[test]
+    fn test_compile_rule_with_field_mapping() {
+        let mut field_mapping = FieldMapping::new();
+        field_mapping.add_mapping("Event_ID".to_string(), "EventID".to_string());
+
+        let mut compiler = Compiler::with_field_mapping(field_mapping);
+        let rule_yaml = r#"
+        title: Test Rule
+        detection:
+            selection:
+                Event_ID: 4624
+            condition: selection
+        "#;
+
+        let result = compiler.compile_rule(rule_yaml);
+        assert!(result.is_ok());
+
+        // Check that the primitive was created with the normalized field name
+        let primitives = compiler.primitives();
+        assert_eq!(primitives.len(), 1);
+        assert_eq!(primitives[0].field, "EventID");
+    }
+
+    #[test]
+    fn test_compile_rule_invalid_yaml() {
+        let mut compiler = Compiler::new();
+        let invalid_yaml = "invalid: yaml: [unclosed";
+
+        let result = compiler.compile_rule(invalid_yaml);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::YamlError(msg)) = result {
+            assert!(msg.contains("Failed to parse YAML"));
+        } else {
+            panic!("Expected YamlError");
+        }
+    }
+
+    #[test]
+    fn test_compile_rule_with_invalid_number() {
+        let mut compiler = Compiler::new();
+        // This should work fine as serde_yaml handles number parsing
+        let rule_yaml = r#"
+        title: Test Rule
+        detection:
+            selection:
+                EventID: 4624
+                Score: 95.5
+            condition: selection
+        "#;
+
+        let result = compiler.compile_rule(rule_yaml);
+        assert!(result.is_ok());
     }
 }

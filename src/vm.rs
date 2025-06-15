@@ -742,4 +742,43 @@ mod tests {
         let result = vm.execute(&chunk, &primitive_results).unwrap();
         assert_eq!(result, Some(1));
     }
+
+    #[test]
+    fn test_vm_creation_different_sizes() {
+        let vm = Vm::<32>::new();
+        assert_eq!(vm.stack_depth(), 0);
+    }
+
+    #[test]
+    fn test_vm_with_different_stack_sizes() {
+        let vm8 = Vm::<8>::new();
+        let vm16 = Vm::<16>::new();
+        let vm32 = Vm::<32>::new();
+        let vm64 = Vm::<64>::new();
+
+        assert_eq!(vm8.stack_depth(), 0);
+        assert_eq!(vm16.stack_depth(), 0);
+        assert_eq!(vm32.stack_depth(), 0);
+        assert_eq!(vm64.stack_depth(), 0);
+    }
+
+    #[test]
+    fn test_execute_with_empty_primitive_results() {
+        let mut vm = Vm::<16>::new();
+        let chunk = BytecodeChunk::new(1, vec![Opcode::ReturnMatch(1)]);
+        let primitive_results = [];
+
+        let result = vm.execute(&chunk, &primitive_results);
+        assert!(matches!(result, Err(SigmaError::StackUnderflow)));
+    }
+
+    #[test]
+    fn test_execute_optimized_with_false_result() {
+        let mut vm = Vm::<16>::new();
+        let chunk = BytecodeChunk::new(1, vec![Opcode::PushMatch(0), Opcode::ReturnMatch(1)]);
+        let primitive_results = [false];
+
+        let result = vm.execute_optimized(&chunk, &primitive_results).unwrap();
+        assert_eq!(result, None);
+    }
 }

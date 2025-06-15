@@ -323,3 +323,392 @@ pub(crate) fn parse_tokens(
     let mut parser = ConditionParser::new(tokens, selection_map);
     parser.parse_or_expression()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn create_test_selection_map() -> HashMap<String, Vec<PrimitiveId>> {
+        let mut map = HashMap::new();
+        map.insert("selection1".to_string(), vec![0]);
+        map.insert("selection2".to_string(), vec![1]);
+        map.insert("selection3".to_string(), vec![2]);
+        map
+    }
+
+    #[test]
+    fn test_tokenize_simple_identifier() {
+        let result = tokenize_condition("selection1");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0], Token::Identifier(ref s) if s == "selection1"));
+    }
+
+    #[test]
+    fn test_tokenize_and_expression() {
+        let result = tokenize_condition("selection1 and selection2");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(tokens[0], Token::Identifier(_)));
+        assert!(matches!(tokens[1], Token::And));
+        assert!(matches!(tokens[2], Token::Identifier(_)));
+    }
+
+    #[test]
+    fn test_tokenize_or_expression() {
+        let result = tokenize_condition("selection1 or selection2");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(tokens[0], Token::Identifier(_)));
+        assert!(matches!(tokens[1], Token::Or));
+        assert!(matches!(tokens[2], Token::Identifier(_)));
+    }
+
+    #[test]
+    fn test_tokenize_not_expression() {
+        let result = tokenize_condition("not selection1");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 2);
+        assert!(matches!(tokens[0], Token::Not));
+        assert!(matches!(tokens[1], Token::Identifier(_)));
+    }
+
+    #[test]
+    fn test_tokenize_parentheses() {
+        let result = tokenize_condition("(selection1 and selection2)");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 5);
+        assert!(matches!(tokens[0], Token::LeftParen));
+        assert!(matches!(tokens[1], Token::Identifier(_)));
+        assert!(matches!(tokens[2], Token::And));
+        assert!(matches!(tokens[3], Token::Identifier(_)));
+        assert!(matches!(tokens[4], Token::RightParen));
+    }
+
+    #[test]
+    fn test_tokenize_numbers() {
+        let result = tokenize_condition("2 of selection*");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(tokens[0], Token::Number(2)));
+        assert!(matches!(tokens[1], Token::Of));
+        assert!(matches!(tokens[2], Token::Wildcard(_)));
+    }
+
+    #[test]
+    fn test_tokenize_wildcard() {
+        let result = tokenize_condition("selection*");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0], Token::Wildcard(ref s) if s == "selection*"));
+    }
+
+    #[test]
+    fn test_tokenize_all_of_them() {
+        let result = tokenize_condition("all of them");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(tokens[0], Token::All));
+        assert!(matches!(tokens[1], Token::Of));
+        assert!(matches!(tokens[2], Token::Them));
+    }
+
+    #[test]
+    fn test_tokenize_one_of_them() {
+        let result = tokenize_condition("1 of them");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(tokens[0], Token::Number(1)));
+        assert!(matches!(tokens[1], Token::Of));
+        assert!(matches!(tokens[2], Token::Them));
+    }
+
+    #[test]
+    fn test_tokenize_invalid_character() {
+        let result = tokenize_condition("selection1 @ selection2");
+        assert!(result.is_err());
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("Unexpected character"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_tokenize_whitespace_handling() {
+        let result = tokenize_condition("  selection1   and   selection2  ");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_simple_identifier() {
+        let tokens = vec![Token::Identifier("selection1".to_string())];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        assert!(matches!(ast, ConditionAst::Identifier(ref s) if s == "selection1"));
+    }
+
+    #[test]
+    fn test_parse_and_expression() {
+        let tokens = vec![
+            Token::Identifier("selection1".to_string()),
+            Token::And,
+            Token::Identifier("selection2".to_string()),
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        assert!(matches!(ast, ConditionAst::And(_, _)));
+    }
+
+    #[test]
+    fn test_parse_or_expression() {
+        let tokens = vec![
+            Token::Identifier("selection1".to_string()),
+            Token::Or,
+            Token::Identifier("selection2".to_string()),
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        assert!(matches!(ast, ConditionAst::Or(_, _)));
+    }
+
+    #[test]
+    fn test_parse_not_expression() {
+        let tokens = vec![Token::Not, Token::Identifier("selection1".to_string())];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        assert!(matches!(ast, ConditionAst::Not(_)));
+    }
+
+    #[test]
+    fn test_parse_parentheses() {
+        let tokens = vec![
+            Token::LeftParen,
+            Token::Identifier("selection1".to_string()),
+            Token::And,
+            Token::Identifier("selection2".to_string()),
+            Token::RightParen,
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        assert!(matches!(ast, ConditionAst::And(_, _)));
+    }
+
+    #[test]
+    fn test_parse_all_of_them() {
+        let tokens = vec![Token::All, Token::Of, Token::Them];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        assert!(matches!(ast, ConditionAst::AllOfThem));
+    }
+
+    #[test]
+    fn test_parse_one_of_them() {
+        let tokens = vec![Token::Number(1), Token::Of, Token::Them];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        assert!(matches!(ast, ConditionAst::OneOfThem));
+    }
+
+    #[test]
+    fn test_parse_count_of_pattern() {
+        let tokens = vec![
+            Token::Number(2),
+            Token::Of,
+            Token::Wildcard("selection*".to_string()),
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        assert!(matches!(ast, ConditionAst::CountOfPattern(2, ref s) if s == "selection*"));
+    }
+
+    #[test]
+    fn test_parse_all_of_pattern() {
+        let tokens = vec![
+            Token::All,
+            Token::Of,
+            Token::Wildcard("selection*".to_string()),
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        assert!(matches!(ast, ConditionAst::AllOfPattern(ref s) if s == "selection*"));
+    }
+
+    #[test]
+    fn test_parse_one_of_pattern() {
+        let tokens = vec![
+            Token::Number(1),
+            Token::Of,
+            Token::Wildcard("selection*".to_string()),
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        // "1 of pattern" should parse as CountOfPattern(1, pattern)
+        assert!(matches!(ast, ConditionAst::CountOfPattern(1, ref s) if s == "selection*"));
+    }
+
+    #[test]
+    fn test_parse_empty_tokens() {
+        let tokens = vec![];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("Empty condition"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_parse_complex_expression() {
+        // Test: (selection1 and selection2) or not selection3
+        let tokens = vec![
+            Token::LeftParen,
+            Token::Identifier("selection1".to_string()),
+            Token::And,
+            Token::Identifier("selection2".to_string()),
+            Token::RightParen,
+            Token::Or,
+            Token::Not,
+            Token::Identifier("selection3".to_string()),
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        assert!(matches!(ast, ConditionAst::Or(_, _)));
+    }
+
+    #[test]
+    fn test_parse_operator_precedence() {
+        // Test: selection1 and selection2 or selection3 (should be (selection1 and selection2) or selection3)
+        let tokens = vec![
+            Token::Identifier("selection1".to_string()),
+            Token::And,
+            Token::Identifier("selection2".to_string()),
+            Token::Or,
+            Token::Identifier("selection3".to_string()),
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        // Should be parsed as OR at the top level due to precedence
+        assert!(matches!(ast, ConditionAst::Or(_, _)));
+    }
+
+    #[test]
+    fn test_parse_multiple_numbers() {
+        let result = tokenize_condition("123 of selection*");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(tokens[0], Token::Number(123)));
+    }
+
+    #[test]
+    fn test_parse_zero_count() {
+        let tokens = vec![
+            Token::Number(0),
+            Token::Of,
+            Token::Wildcard("selection*".to_string()),
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_ok());
+
+        let ast = result.unwrap();
+        assert!(matches!(ast, ConditionAst::CountOfPattern(0, _)));
+    }
+
+    #[test]
+    fn test_tokenize_underscore_identifiers() {
+        let result = tokenize_condition("_internal_selection");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0], Token::Identifier(ref s) if s == "_internal_selection"));
+    }
+
+    #[test]
+    fn test_tokenize_mixed_case() {
+        let result = tokenize_condition("Selection1 AND Selection2");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(tokens[0], Token::Identifier(ref s) if s == "Selection1"));
+        assert!(matches!(tokens[1], Token::Identifier(ref s) if s == "AND")); // Case sensitive
+        assert!(matches!(tokens[2], Token::Identifier(ref s) if s == "Selection2"));
+    }
+
+    #[test]
+    fn test_tokenize_alphanumeric_identifiers() {
+        let result = tokenize_condition("selection123 and test456");
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(tokens[0], Token::Identifier(ref s) if s == "selection123"));
+        assert!(matches!(tokens[1], Token::And));
+        assert!(matches!(tokens[2], Token::Identifier(ref s) if s == "test456"));
+    }
+}

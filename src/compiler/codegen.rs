@@ -393,3 +393,492 @@ fn generate_combinations_recursive(
         current.pop();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::collections::HashMap;
+
+    fn create_test_selection_map() -> HashMap<String, Vec<PrimitiveId>> {
+        let mut map = HashMap::new();
+        map.insert("selection1".to_string(), vec![0]);
+        map.insert("selection2".to_string(), vec![1]);
+        map.insert("selection3".to_string(), vec![2]);
+        map
+    }
+
+    fn create_empty_selection_map() -> HashMap<String, Vec<PrimitiveId>> {
+        HashMap::new()
+    }
+
+    #[test]
+    fn test_generate_bytecode_identifier() {
+        let ast = ConditionAst::Identifier("selection1".to_string());
+        let selection_map = create_test_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        assert_eq!(opcodes.len(), 1);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(0)));
+    }
+
+    #[test]
+    fn test_generate_bytecode_identifier_unknown() {
+        let ast = ConditionAst::Identifier("unknown_selection".to_string());
+        let selection_map = create_test_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("Unknown selection identifier"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_generate_bytecode_identifier_empty_primitives() {
+        let ast = ConditionAst::Identifier("empty_selection".to_string());
+        let mut selection_map = HashMap::new();
+        selection_map.insert("empty_selection".to_string(), vec![]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("has no primitives"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_generate_bytecode_identifier_multiple_primitives() {
+        let ast = ConditionAst::Identifier("multi_selection".to_string());
+        let mut selection_map = HashMap::new();
+        selection_map.insert("multi_selection".to_string(), vec![0, 1, 2]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Should have 3 PushMatch + 2 And operations
+        assert_eq!(opcodes.len(), 5);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(0)));
+        assert!(matches!(opcodes[1], Opcode::PushMatch(1)));
+        assert!(matches!(opcodes[2], Opcode::PushMatch(2)));
+        assert!(matches!(opcodes[3], Opcode::And));
+        assert!(matches!(opcodes[4], Opcode::And));
+    }
+
+    #[test]
+    fn test_generate_bytecode_and() {
+        let left = ConditionAst::Identifier("selection1".to_string());
+        let right = ConditionAst::Identifier("selection2".to_string());
+        let ast = ConditionAst::And(Box::new(left), Box::new(right));
+        let selection_map = create_test_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        assert_eq!(opcodes.len(), 3);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(0)));
+        assert!(matches!(opcodes[1], Opcode::PushMatch(1)));
+        assert!(matches!(opcodes[2], Opcode::And));
+    }
+
+    #[test]
+    fn test_generate_bytecode_or() {
+        let left = ConditionAst::Identifier("selection1".to_string());
+        let right = ConditionAst::Identifier("selection2".to_string());
+        let ast = ConditionAst::Or(Box::new(left), Box::new(right));
+        let selection_map = create_test_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        assert_eq!(opcodes.len(), 3);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(0)));
+        assert!(matches!(opcodes[1], Opcode::PushMatch(1)));
+        assert!(matches!(opcodes[2], Opcode::Or));
+    }
+
+    #[test]
+    fn test_generate_bytecode_not() {
+        let operand = ConditionAst::Identifier("selection1".to_string());
+        let ast = ConditionAst::Not(Box::new(operand));
+        let selection_map = create_test_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        assert_eq!(opcodes.len(), 2);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(0)));
+        assert!(matches!(opcodes[1], Opcode::Not));
+    }
+
+    #[test]
+    fn test_generate_bytecode_one_of_them() {
+        let ast = ConditionAst::OneOfThem;
+        let selection_map = create_test_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Should have 3 PushMatch + 2 Or operations
+        assert_eq!(opcodes.len(), 5);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[1], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[2], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[3], Opcode::Or));
+        assert!(matches!(opcodes[4], Opcode::Or));
+    }
+
+    #[test]
+    fn test_generate_bytecode_one_of_them_empty() {
+        let ast = ConditionAst::OneOfThem;
+        let selection_map = create_empty_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("No valid selections found for 'one of them'"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_generate_bytecode_all_of_them() {
+        let ast = ConditionAst::AllOfThem;
+        let selection_map = create_test_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Should have 3 PushMatch + 2 And operations
+        assert_eq!(opcodes.len(), 5);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[1], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[2], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[3], Opcode::And));
+        assert!(matches!(opcodes[4], Opcode::And));
+    }
+
+    #[test]
+    fn test_generate_bytecode_all_of_them_empty() {
+        let ast = ConditionAst::AllOfThem;
+        let selection_map = create_empty_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("No valid selections found for 'all of them'"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_generate_bytecode_one_of_pattern() {
+        let ast = ConditionAst::OneOfPattern("sel*".to_string());
+        let mut selection_map = HashMap::new();
+        selection_map.insert("sel1".to_string(), vec![0]);
+        selection_map.insert("sel2".to_string(), vec![1]);
+        selection_map.insert("other".to_string(), vec![2]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Should have 2 PushMatch + 1 Or operation (sel1 and sel2 match pattern)
+        assert_eq!(opcodes.len(), 3);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[1], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[2], Opcode::Or));
+    }
+
+    #[test]
+    fn test_generate_bytecode_all_of_pattern() {
+        let ast = ConditionAst::AllOfPattern("sel*".to_string());
+        let mut selection_map = HashMap::new();
+        selection_map.insert("sel1".to_string(), vec![0]);
+        selection_map.insert("sel2".to_string(), vec![1]);
+        selection_map.insert("other".to_string(), vec![2]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Should have 2 PushMatch + 1 And operation (sel1 and sel2 match pattern)
+        assert_eq!(opcodes.len(), 3);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[1], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[2], Opcode::And));
+    }
+
+    #[test]
+    fn test_generate_bytecode_pattern_no_matches() {
+        let ast = ConditionAst::OneOfPattern("nomatch*".to_string());
+        let selection_map = create_test_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("No selections found matching pattern"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_generate_bytecode_count_of_pattern_zero() {
+        let ast = ConditionAst::CountOfPattern(0, "sel*".to_string());
+        let mut selection_map = HashMap::new();
+        selection_map.insert("sel1".to_string(), vec![0]);
+        selection_map.insert("sel2".to_string(), vec![1]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Count of 0 should generate false condition
+        assert_eq!(opcodes.len(), 3);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(0)));
+        assert!(matches!(opcodes[1], Opcode::Not));
+        assert!(matches!(opcodes[2], Opcode::And));
+    }
+
+    #[test]
+    fn test_generate_bytecode_count_of_pattern_one() {
+        let ast = ConditionAst::CountOfPattern(1, "sel*".to_string());
+        let mut selection_map = HashMap::new();
+        selection_map.insert("sel1".to_string(), vec![0]);
+        selection_map.insert("sel2".to_string(), vec![1]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Count of 1 should generate OR logic
+        assert_eq!(opcodes.len(), 3);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[1], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[2], Opcode::Or));
+    }
+
+    #[test]
+    fn test_generate_bytecode_count_of_pattern_all() {
+        let ast = ConditionAst::CountOfPattern(2, "sel*".to_string());
+        let mut selection_map = HashMap::new();
+        selection_map.insert("sel1".to_string(), vec![0]);
+        selection_map.insert("sel2".to_string(), vec![1]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Count equals total should generate AND logic
+        assert_eq!(opcodes.len(), 3);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[1], Opcode::PushMatch(_)));
+        assert!(matches!(opcodes[2], Opcode::And));
+    }
+
+    #[test]
+    fn test_generate_bytecode_count_of_pattern_impossible() {
+        let ast = ConditionAst::CountOfPattern(5, "sel*".to_string());
+        let mut selection_map = HashMap::new();
+        selection_map.insert("sel1".to_string(), vec![0]);
+        selection_map.insert("sel2".to_string(), vec![1]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Impossible count should generate false condition
+        assert_eq!(opcodes.len(), 3);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(0)));
+        assert!(matches!(opcodes[1], Opcode::Not));
+        assert!(matches!(opcodes[2], Opcode::And));
+    }
+
+    #[test]
+    fn test_generate_bytecode_count_of_pattern_no_matches() {
+        let ast = ConditionAst::CountOfPattern(1, "nomatch*".to_string());
+        let selection_map = create_test_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("No selections found matching pattern"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_generate_bytecode_count_of_pattern_complex() {
+        let ast = ConditionAst::CountOfPattern(2, "sel*".to_string());
+        let mut selection_map = HashMap::new();
+        selection_map.insert("sel1".to_string(), vec![0]);
+        selection_map.insert("sel2".to_string(), vec![1]);
+        selection_map.insert("sel3".to_string(), vec![2]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Should generate combination logic for 2 of 3
+        assert!(opcodes.len() > 3);
+        assert!(opcodes.iter().any(|op| matches!(op, Opcode::PushMatch(_))));
+        assert!(opcodes.iter().any(|op| matches!(op, Opcode::Or)));
+    }
+
+    #[test]
+    fn test_generate_bytecode_count_too_complex() {
+        let ast = ConditionAst::CountOfPattern(5, "sel*".to_string());
+        let mut selection_map = HashMap::new();
+        // Create 10 selections to exceed complexity limit
+        for i in 0..10 {
+            selection_map.insert(format!("sel{}", i), vec![i]);
+        }
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("too complex for current implementation"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_generate_combinations_basic() {
+        let combinations = generate_combinations(3, 2);
+        assert_eq!(combinations.len(), 3);
+        assert!(combinations.contains(&vec![0, 1]));
+        assert!(combinations.contains(&vec![0, 2]));
+        assert!(combinations.contains(&vec![1, 2]));
+    }
+
+    #[test]
+    fn test_generate_combinations_edge_cases() {
+        // k = 0
+        let combinations = generate_combinations(3, 0);
+        assert_eq!(combinations.len(), 1);
+        assert_eq!(combinations[0], vec![]);
+
+        // k > n
+        let combinations = generate_combinations(2, 5);
+        assert_eq!(combinations.len(), 0);
+
+        // k = n
+        let combinations = generate_combinations(3, 3);
+        assert_eq!(combinations.len(), 1);
+        assert_eq!(combinations[0], vec![0, 1, 2]);
+
+        // n = 0
+        let combinations = generate_combinations(0, 0);
+        assert_eq!(combinations.len(), 1);
+        assert_eq!(combinations[0], vec![]);
+    }
+
+    #[test]
+    fn test_generate_combinations_single() {
+        let combinations = generate_combinations(4, 1);
+        assert_eq!(combinations.len(), 4);
+        assert!(combinations.contains(&vec![0]));
+        assert!(combinations.contains(&vec![1]));
+        assert!(combinations.contains(&vec![2]));
+        assert!(combinations.contains(&vec![3]));
+    }
+
+    #[test]
+    fn test_pattern_matching_with_underscore_selections() {
+        let ast = ConditionAst::OneOfThem;
+        let mut selection_map = HashMap::new();
+        selection_map.insert("_internal".to_string(), vec![0]);
+        selection_map.insert("selection1".to_string(), vec![1]);
+        selection_map.insert("_another_internal".to_string(), vec![2]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Should only include non-underscore selections
+        assert_eq!(opcodes.len(), 1);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(1)));
+    }
+
+    #[test]
+    fn test_pattern_matching_with_empty_primitive_lists() {
+        let ast = ConditionAst::OneOfThem;
+        let mut selection_map = HashMap::new();
+        selection_map.insert("selection1".to_string(), vec![]);
+        selection_map.insert("selection2".to_string(), vec![1]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Should only include selections with non-empty primitive lists
+        assert_eq!(opcodes.len(), 1);
+        assert!(matches!(opcodes[0], Opcode::PushMatch(1)));
+    }
+
+    #[test]
+    fn test_complex_nested_expression() {
+        // Test (selection1 and selection2) or not selection3
+        let left = ConditionAst::And(
+            Box::new(ConditionAst::Identifier("selection1".to_string())),
+            Box::new(ConditionAst::Identifier("selection2".to_string())),
+        );
+        let right = ConditionAst::Not(Box::new(ConditionAst::Identifier("selection3".to_string())));
+        let ast = ConditionAst::Or(Box::new(left), Box::new(right));
+        let selection_map = create_test_selection_map();
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        assert_eq!(opcodes.len(), 6); // Fixed: should include the final Or
+        assert!(matches!(opcodes[0], Opcode::PushMatch(0)));
+        assert!(matches!(opcodes[1], Opcode::PushMatch(1)));
+        assert!(matches!(opcodes[2], Opcode::And));
+        assert!(matches!(opcodes[3], Opcode::PushMatch(2)));
+        assert!(matches!(opcodes[4], Opcode::Not));
+        assert!(matches!(opcodes[5], Opcode::Or));
+    }
+
+    #[test]
+    fn test_pattern_with_multiple_primitives_per_selection() {
+        let ast = ConditionAst::OneOfPattern("sel*".to_string());
+        let mut selection_map = HashMap::new();
+        selection_map.insert("sel1".to_string(), vec![0, 1]);
+        selection_map.insert("sel2".to_string(), vec![2, 3, 4]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // sel1: PushMatch(0), PushMatch(1), And
+        // sel2: PushMatch(2), PushMatch(3), PushMatch(4), And, And
+        // Final: Or
+        assert_eq!(opcodes.len(), 9);
+    }
+}
