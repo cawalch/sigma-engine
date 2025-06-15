@@ -4,7 +4,61 @@
 //! that evaluates compiled bytecode using pre-computed primitive results.
 
 use crate::error::{Result, SigmaError};
-use crate::ir::{BytecodeChunk, Opcode, RuleId};
+use crate::ir::{BytecodeChunk, ChunkComplexity, Opcode, RuleId};
+
+/// Performance metrics for adaptive execution monitoring.
+#[derive(Debug, Default, Clone)]
+pub struct VmMetrics {
+    /// Number of simple chunks executed
+    pub simple_executions: u64,
+    /// Number of medium chunks executed
+    pub medium_executions: u64,
+    /// Number of complex chunks executed
+    pub complex_executions: u64,
+    /// Total execution count
+    pub total_executions: u64,
+    /// Total execution time in nanoseconds (when timing is enabled)
+    pub total_execution_time_ns: u64,
+    /// Average execution time per operation
+    pub avg_execution_time_ns: f64,
+}
+
+impl VmMetrics {
+    /// Calculate performance statistics.
+    pub fn performance_summary(&self) -> String {
+        if self.total_executions == 0 {
+            return "No executions recorded".to_string();
+        }
+
+        let simple_pct = (self.simple_executions as f64 / self.total_executions as f64) * 100.0;
+        let medium_pct = (self.medium_executions as f64 / self.total_executions as f64) * 100.0;
+        let complex_pct = (self.complex_executions as f64 / self.total_executions as f64) * 100.0;
+
+        format!(
+            "VM Performance Summary:\n\
+             Total Executions: {}\n\
+             Simple Rules: {} ({:.1}%)\n\
+             Medium Rules: {} ({:.1}%)\n\
+             Complex Rules: {} ({:.1}%)\n\
+             Avg Time/Op: {:.2} ns",
+            self.total_executions,
+            self.simple_executions,
+            simple_pct,
+            self.medium_executions,
+            medium_pct,
+            self.complex_executions,
+            complex_pct,
+            self.avg_execution_time_ns
+        )
+    }
+
+    /// Update timing metrics.
+    pub fn update_timing(&mut self, execution_time_ns: u64) {
+        self.total_execution_time_ns += execution_time_ns;
+        self.avg_execution_time_ns =
+            self.total_execution_time_ns as f64 / self.total_executions as f64;
+    }
+}
 
 /// Stack-based virtual machine for executing SIGMA bytecode.
 ///
@@ -13,6 +67,9 @@ use crate::ir::{BytecodeChunk, Opcode, RuleId};
 pub struct Vm<const STACK_SIZE: usize = 64> {
     stack: [bool; STACK_SIZE],
     stack_ptr: usize,
+    /// Performance metrics for monitoring adaptive execution
+    #[cfg(feature = "metrics")]
+    metrics: VmMetrics,
 }
 
 impl<const STACK_SIZE: usize> Vm<STACK_SIZE> {
@@ -21,7 +78,54 @@ impl<const STACK_SIZE: usize> Vm<STACK_SIZE> {
         Self {
             stack: [false; STACK_SIZE],
             stack_ptr: 0,
+            #[cfg(feature = "metrics")]
+            metrics: VmMetrics::default(),
         }
+    }
+
+    /// Ultra-fast execution using unsafe optimizations.
+    ///
+    /// # Safety
+    /// Assumes all bytecode is valid and uses unsafe array access.
+    #[inline]
+    pub fn execute_ultra_fast(
+        &mut self,
+        chunk: &BytecodeChunk,
+        primitive_results: &[bool],
+    ) -> Option<RuleId> {
+        self.stack_ptr = 0;
+
+        for opcode in &chunk.opcodes {
+            match opcode {
+                Opcode::PushMatch(primitive_id) => unsafe {
+                    let result = *primitive_results.get_unchecked(*primitive_id as usize);
+                    *self.stack.get_unchecked_mut(self.stack_ptr) = result;
+                    self.stack_ptr += 1;
+                },
+                Opcode::And => unsafe {
+                    self.stack_ptr -= 1;
+                    let b = *self.stack.get_unchecked(self.stack_ptr);
+                    let a = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    *self.stack.get_unchecked_mut(self.stack_ptr - 1) = a && b;
+                },
+                Opcode::Or => unsafe {
+                    self.stack_ptr -= 1;
+                    let b = *self.stack.get_unchecked(self.stack_ptr);
+                    let a = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    *self.stack.get_unchecked_mut(self.stack_ptr - 1) = a || b;
+                },
+                Opcode::ReturnMatch(rule_id) => unsafe {
+                    let result = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    return if result { Some(*rule_id) } else { None };
+                },
+                Opcode::Not => unsafe {
+                    let value = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    *self.stack.get_unchecked_mut(self.stack_ptr - 1) = !value;
+                },
+            }
+        }
+
+        unsafe { std::hint::unreachable_unchecked() }
     }
 
     /// Execute a bytecode chunk with the given primitive results.
@@ -72,33 +176,13 @@ impl<const STACK_SIZE: usize> Vm<STACK_SIZE> {
         ))
     }
 
-    /// Execute a bytecode chunk with the given primitive results (unchecked version).
-    ///
-    /// This is a high-performance version that eliminates error handling overhead
-    /// by assuming the bytecode and primitive results are valid.
-    ///
-    /// **Performance**: Provides 25-53% performance improvement over checked execution.
-    ///
-    /// # Safety Requirements
-    /// Use this only when you can guarantee:
-    /// * All primitive IDs in the bytecode are valid for the primitive_results slice
-    /// * The bytecode has proper structure (ends with ReturnMatch)
-    /// * The stack won't overflow (max_stack_depth <= STACK_SIZE)
-    ///
-    /// # Arguments
-    /// * `chunk` - The bytecode chunk to execute (must be pre-validated)
-    /// * `primitive_results` - Slice of boolean results for each primitive
-    ///
-    /// # Returns
-    /// * `Some(RuleId)` if the rule matched
-    /// * `None` if the rule did not match
+    /// Execute bytecode without bounds checking for maximum performance.
     ///
     /// # Safety
-    /// This function uses unsafe array access for maximum performance.
-    /// The caller must ensure all preconditions are met.
-    ///
-    /// # Recommended Usage
-    /// Use `execute_optimized()` instead for automatic safety validation.
+    /// Caller must ensure:
+    /// - All primitive IDs are valid
+    /// - Bytecode ends with ReturnMatch
+    /// - Stack won't overflow
     #[inline]
     pub fn execute_unchecked(
         &mut self,
@@ -110,17 +194,14 @@ impl<const STACK_SIZE: usize> Vm<STACK_SIZE> {
         for opcode in &chunk.opcodes {
             match opcode {
                 Opcode::PushMatch(primitive_id) => {
-                    // SAFETY: Caller guarantees primitive_id is valid
                     let result =
                         unsafe { *primitive_results.get_unchecked(*primitive_id as usize) };
-                    // SAFETY: Caller guarantees no stack overflow
                     unsafe {
                         *self.stack.get_unchecked_mut(self.stack_ptr) = result;
                     }
                     self.stack_ptr += 1;
                 }
                 Opcode::And => {
-                    // SAFETY: Caller guarantees no stack underflow
                     unsafe {
                         let b = *self.stack.get_unchecked(self.stack_ptr - 1);
                         let a = *self.stack.get_unchecked(self.stack_ptr - 2);
@@ -129,7 +210,6 @@ impl<const STACK_SIZE: usize> Vm<STACK_SIZE> {
                     self.stack_ptr -= 1;
                 }
                 Opcode::Or => {
-                    // SAFETY: Caller guarantees no stack underflow
                     unsafe {
                         let b = *self.stack.get_unchecked(self.stack_ptr - 1);
                         let a = *self.stack.get_unchecked(self.stack_ptr - 2);
@@ -137,48 +217,21 @@ impl<const STACK_SIZE: usize> Vm<STACK_SIZE> {
                     }
                     self.stack_ptr -= 1;
                 }
-                Opcode::Not => {
-                    // SAFETY: Caller guarantees no stack underflow
-                    unsafe {
-                        let value = *self.stack.get_unchecked(self.stack_ptr - 1);
-                        *self.stack.get_unchecked_mut(self.stack_ptr - 1) = !value;
-                    }
-                }
+                Opcode::Not => unsafe {
+                    let value = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    *self.stack.get_unchecked_mut(self.stack_ptr - 1) = !value;
+                },
                 Opcode::ReturnMatch(rule_id) => {
-                    // SAFETY: Caller guarantees no stack underflow
                     let result = unsafe { *self.stack.get_unchecked(self.stack_ptr - 1) };
                     return if result { Some(*rule_id) } else { None };
                 }
             }
         }
 
-        // SAFETY: Caller guarantees bytecode ends with ReturnMatch
         unsafe { std::hint::unreachable_unchecked() }
     }
 
-    /// Execute a bytecode chunk with automatic optimization selection.
-    ///
-    /// This method automatically chooses between checked and unchecked execution
-    /// based on the bytecode validation and runtime conditions. It provides
-    /// the best performance while maintaining safety.
-    ///
-    /// **Performance**: This method provides 25-53% performance improvement over
-    /// checked execution by eliminating error handling overhead when safe.
-    ///
-    /// # Arguments
-    /// * `chunk` - The bytecode chunk to execute
-    /// * `primitive_results` - Slice of boolean results for each primitive
-    ///
-    /// # Returns
-    /// * `Some(RuleId)` if the rule matched
-    /// * `None` if the rule did not match
-    ///
-    /// # Errors
-    /// Returns an error only if using checked execution and validation fails
-    ///
-    /// # Recommended Usage
-    /// This is the recommended method for production use as it automatically
-    /// selects the fastest safe execution path.
+    /// Execute with automatic optimization selection.
     #[inline]
     pub fn execute_optimized(
         &mut self,
@@ -186,9 +239,35 @@ impl<const STACK_SIZE: usize> Vm<STACK_SIZE> {
         primitive_results: &[bool],
     ) -> Result<Option<RuleId>> {
         if chunk.can_execute_unchecked(primitive_results.len(), STACK_SIZE) {
-            Ok(self.execute_unchecked(chunk, primitive_results))
+            Ok(self.execute_ultra_fast(chunk, primitive_results))
         } else {
             self.execute(chunk, primitive_results)
+        }
+    }
+
+    /// Execute using complexity-based strategy selection.
+    #[inline]
+    pub fn execute_adaptive(
+        &mut self,
+        chunk: &BytecodeChunk,
+        primitive_results: &[bool],
+    ) -> Option<RuleId> {
+        let complexity = chunk.complexity;
+
+        #[cfg(feature = "metrics")]
+        {
+            self.metrics.total_executions += 1;
+            match complexity {
+                ChunkComplexity::Simple => self.metrics.simple_executions += 1,
+                ChunkComplexity::Medium => self.metrics.medium_executions += 1,
+                ChunkComplexity::Complex => self.metrics.complex_executions += 1,
+            }
+        }
+
+        match complexity {
+            ChunkComplexity::Simple => self.execute_simple_optimized(chunk, primitive_results),
+            ChunkComplexity::Medium => self.execute_ultra_fast(chunk, primitive_results),
+            ChunkComplexity::Complex => self.execute_complex_optimized(chunk, primitive_results),
         }
     }
 
@@ -268,6 +347,180 @@ impl<const STACK_SIZE: usize> Vm<STACK_SIZE> {
 
     pub fn reset(&mut self) {
         self.stack_ptr = 0;
+    }
+
+    #[cfg(feature = "metrics")]
+    pub fn metrics(&self) -> &VmMetrics {
+        &self.metrics
+    }
+
+    /// Reset performance metrics.
+    #[cfg(feature = "metrics")]
+    pub fn reset_metrics(&mut self) {
+        self.metrics = VmMetrics::default();
+    }
+
+    /// Execute multiple chunks optimized for batch processing.
+    pub fn execute_batch_optimized(
+        &mut self,
+        chunks: &[BytecodeChunk],
+        primitive_results: &[bool],
+    ) -> Result<Vec<RuleId>> {
+        let mut matches = Vec::with_capacity(chunks.len() / 10);
+
+        let mut simple_chunks = Vec::new();
+        let mut medium_chunks = Vec::new();
+        let mut complex_chunks = Vec::new();
+
+        for (idx, chunk) in chunks.iter().enumerate() {
+            match chunk.complexity {
+                ChunkComplexity::Simple => simple_chunks.push((idx, chunk)),
+                ChunkComplexity::Medium => medium_chunks.push((idx, chunk)),
+                ChunkComplexity::Complex => complex_chunks.push((idx, chunk)),
+            }
+        }
+
+        for (_, chunk) in simple_chunks {
+            if let Some(rule_id) = self.execute_simple_optimized(chunk, primitive_results) {
+                matches.push(rule_id);
+            }
+        }
+
+        for (_, chunk) in medium_chunks {
+            if chunk.can_execute_unchecked(primitive_results.len(), STACK_SIZE) {
+                if let Some(rule_id) = self.execute_ultra_fast(chunk, primitive_results) {
+                    matches.push(rule_id);
+                }
+            } else if let Some(rule_id) = self.execute(chunk, primitive_results)? {
+                matches.push(rule_id);
+            }
+        }
+
+        for (_, chunk) in complex_chunks {
+            if chunk.can_execute_unchecked(primitive_results.len(), STACK_SIZE) {
+                if let Some(rule_id) = self.execute_complex_optimized(chunk, primitive_results) {
+                    matches.push(rule_id);
+                }
+            } else if let Some(rule_id) = self.execute(chunk, primitive_results)? {
+                matches.push(rule_id);
+            }
+        }
+
+        Ok(matches)
+    }
+
+    #[cfg(feature = "metrics")]
+    pub fn execute_with_timing(
+        &mut self,
+        chunk: &BytecodeChunk,
+        primitive_results: &[bool],
+    ) -> Result<Option<RuleId>> {
+        let start = std::time::Instant::now();
+
+        let result = if chunk.can_execute_unchecked(primitive_results.len(), STACK_SIZE) {
+            Ok(self.execute_adaptive(chunk, primitive_results))
+        } else {
+            self.execute(chunk, primitive_results)
+        };
+
+        let execution_time = start.elapsed().as_nanos() as u64;
+        self.metrics.update_timing(execution_time);
+
+        result
+    }
+
+    #[cfg(feature = "metrics")]
+    pub fn detect_regression(&self, baseline_avg_ns: f64, threshold_pct: f64) -> bool {
+        if self.metrics.total_executions < 100 {
+            return false;
+        }
+
+        let current_avg = self.metrics.avg_execution_time_ns;
+        let regression_threshold = baseline_avg_ns * (1.0 + threshold_pct / 100.0);
+
+        current_avg > regression_threshold
+    }
+
+    #[inline]
+    fn execute_simple_optimized(
+        &mut self,
+        chunk: &BytecodeChunk,
+        primitive_results: &[bool],
+    ) -> Option<RuleId> {
+        self.stack_ptr = 0;
+
+        for opcode in &chunk.opcodes {
+            match opcode {
+                Opcode::PushMatch(primitive_id) => unsafe {
+                    let result = *primitive_results.get_unchecked(*primitive_id as usize);
+                    *self.stack.get_unchecked_mut(self.stack_ptr) = result;
+                    self.stack_ptr += 1;
+                },
+                Opcode::ReturnMatch(rule_id) => unsafe {
+                    let result = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    return if result { Some(*rule_id) } else { None };
+                },
+                Opcode::And => unsafe {
+                    self.stack_ptr -= 1;
+                    let b = *self.stack.get_unchecked(self.stack_ptr);
+                    let a = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    *self.stack.get_unchecked_mut(self.stack_ptr - 1) = a && b;
+                },
+                Opcode::Or => unsafe {
+                    self.stack_ptr -= 1;
+                    let b = *self.stack.get_unchecked(self.stack_ptr);
+                    let a = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    *self.stack.get_unchecked_mut(self.stack_ptr - 1) = a || b;
+                },
+                Opcode::Not => unsafe {
+                    let value = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    *self.stack.get_unchecked_mut(self.stack_ptr - 1) = !value;
+                },
+            }
+        }
+
+        unsafe { std::hint::unreachable_unchecked() }
+    }
+
+    #[inline]
+    fn execute_complex_optimized(
+        &mut self,
+        chunk: &BytecodeChunk,
+        primitive_results: &[bool],
+    ) -> Option<RuleId> {
+        self.stack_ptr = 0;
+
+        for opcode in &chunk.opcodes {
+            match opcode {
+                Opcode::And => unsafe {
+                    self.stack_ptr -= 1;
+                    let b = *self.stack.get_unchecked(self.stack_ptr);
+                    let a = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    *self.stack.get_unchecked_mut(self.stack_ptr - 1) = a && b;
+                },
+                Opcode::Or => unsafe {
+                    self.stack_ptr -= 1;
+                    let b = *self.stack.get_unchecked(self.stack_ptr);
+                    let a = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    *self.stack.get_unchecked_mut(self.stack_ptr - 1) = a || b;
+                },
+                Opcode::PushMatch(primitive_id) => unsafe {
+                    let result = *primitive_results.get_unchecked(*primitive_id as usize);
+                    *self.stack.get_unchecked_mut(self.stack_ptr) = result;
+                    self.stack_ptr += 1;
+                },
+                Opcode::Not => unsafe {
+                    let value = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    *self.stack.get_unchecked_mut(self.stack_ptr - 1) = !value;
+                },
+                Opcode::ReturnMatch(rule_id) => unsafe {
+                    let result = *self.stack.get_unchecked(self.stack_ptr - 1);
+                    return if result { Some(*rule_id) } else { None };
+                },
+            }
+        }
+
+        unsafe { std::hint::unreachable_unchecked() }
     }
 }
 
@@ -780,5 +1033,432 @@ mod tests {
 
         let result = vm.execute_optimized(&chunk, &primitive_results).unwrap();
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_execute_batch_optimized() {
+        let mut vm = Vm::<16>::new();
+
+        // Create chunks with different complexities
+        let simple_chunk =
+            BytecodeChunk::new(1, vec![Opcode::PushMatch(0), Opcode::ReturnMatch(1)]);
+        let medium_chunk = BytecodeChunk::new(
+            2,
+            vec![
+                Opcode::PushMatch(0),
+                Opcode::PushMatch(1),
+                Opcode::And,
+                Opcode::ReturnMatch(2),
+            ],
+        );
+        let complex_chunk = BytecodeChunk::new(
+            3,
+            vec![
+                Opcode::PushMatch(0),
+                Opcode::PushMatch(1),
+                Opcode::And,
+                Opcode::PushMatch(2),
+                Opcode::Or,
+                Opcode::Not,
+                Opcode::ReturnMatch(3),
+            ],
+        );
+
+        let chunks = [simple_chunk, medium_chunk, complex_chunk];
+        let primitive_results = [true, false, true];
+
+        let result = vm
+            .execute_batch_optimized(&chunks, &primitive_results)
+            .unwrap();
+
+        // Simple chunk should match (true), medium should not match (true && false = false)
+        // Complex should match (!((true && false) || true) = !(false || true) = !true = false)
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 1);
+    }
+
+    #[test]
+    fn test_execute_batch_optimized_empty() {
+        let mut vm = Vm::<16>::new();
+        let chunks = [];
+        let primitive_results = [true];
+
+        let result = vm
+            .execute_batch_optimized(&chunks, &primitive_results)
+            .unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_execute_batch_optimized_multiple_matches() {
+        let mut vm = Vm::<16>::new();
+
+        let chunk1 = BytecodeChunk::new(1, vec![Opcode::PushMatch(0), Opcode::ReturnMatch(1)]);
+        let chunk2 = BytecodeChunk::new(2, vec![Opcode::PushMatch(1), Opcode::ReturnMatch(2)]);
+        let chunk3 = BytecodeChunk::new(3, vec![Opcode::PushMatch(2), Opcode::ReturnMatch(3)]);
+
+        let chunks = [chunk1, chunk2, chunk3];
+        let primitive_results = [true, true, false];
+
+        let result = vm
+            .execute_batch_optimized(&chunks, &primitive_results)
+            .unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&1));
+        assert!(result.contains(&2));
+    }
+
+    #[test]
+    fn test_execute_adaptive() {
+        let mut vm = Vm::<16>::new();
+
+        // Test simple chunk
+        let simple_chunk =
+            BytecodeChunk::new(1, vec![Opcode::PushMatch(0), Opcode::ReturnMatch(1)]);
+        let primitive_results = [true];
+
+        let result = vm.execute_adaptive(&simple_chunk, &primitive_results);
+        assert_eq!(result, Some(1));
+
+        // Test medium complexity chunk
+        let medium_chunk = BytecodeChunk::new(
+            2,
+            vec![
+                Opcode::PushMatch(0),
+                Opcode::PushMatch(1),
+                Opcode::And,
+                Opcode::ReturnMatch(2),
+            ],
+        );
+        let primitive_results = [true, true];
+
+        let result = vm.execute_adaptive(&medium_chunk, &primitive_results);
+        assert_eq!(result, Some(2));
+
+        // Test complex chunk
+        let complex_chunk = BytecodeChunk::new(
+            3,
+            vec![
+                Opcode::PushMatch(0),
+                Opcode::PushMatch(1),
+                Opcode::And,
+                Opcode::PushMatch(2),
+                Opcode::Or,
+                Opcode::ReturnMatch(3),
+            ],
+        );
+        let primitive_results = [false, false, true];
+
+        let result = vm.execute_adaptive(&complex_chunk, &primitive_results);
+        assert_eq!(result, Some(3));
+    }
+
+    #[test]
+    fn test_execute_simple_optimized() {
+        let mut vm = Vm::<16>::new();
+
+        // Test simple chunk with single primitive
+        let chunk = BytecodeChunk::new(1, vec![Opcode::PushMatch(0), Opcode::ReturnMatch(1)]);
+        let primitive_results = [true];
+
+        let result = vm.execute_simple_optimized(&chunk, &primitive_results);
+        assert_eq!(result, Some(1));
+
+        // Test simple chunk with false result
+        let primitive_results = [false];
+        let result = vm.execute_simple_optimized(&chunk, &primitive_results);
+        assert_eq!(result, None);
+
+        // Test simple chunk with AND operation
+        let chunk = BytecodeChunk::new(
+            2,
+            vec![
+                Opcode::PushMatch(0),
+                Opcode::PushMatch(1),
+                Opcode::And,
+                Opcode::ReturnMatch(2),
+            ],
+        );
+        let primitive_results = [true, true];
+
+        let result = vm.execute_simple_optimized(&chunk, &primitive_results);
+        assert_eq!(result, Some(2));
+    }
+
+    #[test]
+    fn test_execute_complex_optimized() {
+        let mut vm = Vm::<16>::new();
+
+        // Test complex chunk with multiple operations
+        let chunk = BytecodeChunk::new(
+            1,
+            vec![
+                Opcode::PushMatch(0),
+                Opcode::PushMatch(1),
+                Opcode::And,
+                Opcode::PushMatch(2),
+                Opcode::Or,
+                Opcode::Not,
+                Opcode::ReturnMatch(1),
+            ],
+        );
+        let primitive_results = [true, false, true];
+
+        let result = vm.execute_complex_optimized(&chunk, &primitive_results);
+        assert_eq!(result, None); // !((true && false) || true) = !(false || true) = !true = false
+
+        // Test with different values
+        let primitive_results = [false, false, false];
+        let result = vm.execute_complex_optimized(&chunk, &primitive_results);
+        assert_eq!(result, Some(1)); // !((false && false) || false) = !(false || false) = !false = true
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn test_execute_with_timing() {
+        let mut vm = Vm::<16>::new();
+        let chunk = BytecodeChunk::new(1, vec![Opcode::PushMatch(0), Opcode::ReturnMatch(1)]);
+        let primitive_results = [true];
+
+        let result = vm.execute_with_timing(&chunk, &primitive_results).unwrap();
+        assert_eq!(result, Some(1));
+
+        // Check that metrics were updated
+        assert!(vm.metrics.total_executions > 0);
+        assert!(vm.metrics.avg_execution_time_ns > 0.0);
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn test_vm_metrics_tracking() {
+        let mut vm = Vm::<16>::new();
+
+        // Test simple chunk metrics
+        let simple_chunk =
+            BytecodeChunk::new(1, vec![Opcode::PushMatch(0), Opcode::ReturnMatch(1)]);
+        let primitive_results = [true];
+
+        let _result = vm
+            .execute_with_timing(&simple_chunk, &primitive_results)
+            .unwrap();
+        assert_eq!(vm.metrics.simple_executions, 1);
+        assert_eq!(vm.metrics.medium_executions, 0);
+        assert_eq!(vm.metrics.complex_executions, 0);
+
+        // Test medium complexity chunk metrics (needs more operations to qualify as medium)
+        let medium_chunk = BytecodeChunk::new(
+            2,
+            vec![
+                Opcode::PushMatch(0),
+                Opcode::PushMatch(1),
+                Opcode::And,
+                Opcode::PushMatch(2),
+                Opcode::Or,
+                Opcode::PushMatch(3),
+                Opcode::And,
+                Opcode::ReturnMatch(2),
+            ],
+        );
+
+        let medium_primitive_results = [true, false, true, true];
+        let _result = vm
+            .execute_with_timing(&medium_chunk, &medium_primitive_results)
+            .unwrap();
+        assert_eq!(vm.metrics.simple_executions, 1);
+        assert_eq!(vm.metrics.medium_executions, 1);
+        assert_eq!(vm.metrics.complex_executions, 0);
+    }
+
+    #[test]
+    fn test_vm_reset_with_metrics() {
+        let mut vm = Vm::<16>::new();
+
+        // Execute something to change VM state
+        let chunk = BytecodeChunk::new(1, vec![Opcode::PushMatch(0), Opcode::ReturnMatch(1)]);
+        let primitive_results = [true];
+        let _result = vm.execute(&chunk, &primitive_results).unwrap();
+
+        // Reset and verify state is clean
+        vm.reset();
+        assert_eq!(vm.stack_depth(), 0);
+
+        #[cfg(feature = "metrics")]
+        {
+            // Metrics should be reset too
+            assert_eq!(vm.metrics.total_executions, 0);
+            assert_eq!(vm.metrics.simple_executions, 0);
+            assert_eq!(vm.metrics.medium_executions, 0);
+            assert_eq!(vm.metrics.complex_executions, 0);
+        }
+    }
+
+    #[test]
+    fn test_execute_batch_optimized_with_error() {
+        let mut vm = Vm::<2>::new(); // Small stack to trigger overflow
+
+        // Create a chunk that will cause stack overflow
+        let chunk = BytecodeChunk::new(
+            1,
+            vec![
+                Opcode::PushMatch(0),
+                Opcode::PushMatch(1),
+                Opcode::PushMatch(2), // This should cause overflow with stack size 2
+                Opcode::ReturnMatch(1),
+            ],
+        );
+
+        let chunks = [chunk];
+        let primitive_results = [true, true, true];
+
+        let result = vm.execute_batch_optimized(&chunks, &primitive_results);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execute_optimized_fallback_to_checked() {
+        let mut vm = Vm::<16>::new();
+
+        // Create a chunk that cannot be executed unchecked (invalid primitive ID)
+        let chunk = BytecodeChunk::new(1, vec![Opcode::PushMatch(10), Opcode::ReturnMatch(1)]);
+        let primitive_results = [true]; // Only one primitive, but chunk references primitive 10
+
+        let result = vm.execute_optimized(&chunk, &primitive_results);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(SigmaError::InvalidPrimitiveId(10))));
+    }
+
+    #[test]
+    fn test_execute_ultra_fast_edge_cases() {
+        let mut vm = Vm::<16>::new();
+
+        // Test with NOT operation
+        let chunk = BytecodeChunk::new(
+            1,
+            vec![Opcode::PushMatch(0), Opcode::Not, Opcode::ReturnMatch(1)],
+        );
+        let primitive_results = [false];
+
+        let result = vm.execute_ultra_fast(&chunk, &primitive_results);
+        assert_eq!(result, Some(1)); // !false = true
+
+        // Test with OR operation
+        let chunk = BytecodeChunk::new(
+            2,
+            vec![
+                Opcode::PushMatch(0),
+                Opcode::PushMatch(1),
+                Opcode::Or,
+                Opcode::ReturnMatch(2),
+            ],
+        );
+        let primitive_results = [false, true];
+
+        let result = vm.execute_ultra_fast(&chunk, &primitive_results);
+        assert_eq!(result, Some(2)); // false || true = true
+    }
+
+    #[test]
+    fn test_execute_unchecked_comprehensive() {
+        let mut vm = Vm::<16>::new();
+
+        // Test complex expression: (A && B) || (!C)
+        let chunk = BytecodeChunk::new(
+            1,
+            vec![
+                Opcode::PushMatch(0), // A
+                Opcode::PushMatch(1), // B
+                Opcode::And,          // A && B
+                Opcode::PushMatch(2), // C
+                Opcode::Not,          // !C
+                Opcode::Or,           // (A && B) || (!C)
+                Opcode::ReturnMatch(1),
+            ],
+        );
+
+        // Test case 1: A=true, B=true, C=false -> (true && true) || (!false) = true || true = true
+        let primitive_results = [true, true, false];
+        let result = vm.execute_unchecked(&chunk, &primitive_results);
+        assert_eq!(result, Some(1));
+
+        // Test case 2: A=false, B=true, C=true -> (false && true) || (!true) = false || false = false
+        let primitive_results = [false, true, true];
+        let result = vm.execute_unchecked(&chunk, &primitive_results);
+        assert_eq!(result, None);
+
+        // Test case 3: A=false, B=false, C=true -> (false && false) || (!true) = false || false = false
+        let primitive_results = [false, false, true];
+        let result = vm.execute_unchecked(&chunk, &primitive_results);
+        assert_eq!(result, None);
+
+        // Test case 4: A=false, B=false, C=false -> (false && false) || (!false) = false || true = true
+        let primitive_results = [false, false, false];
+        let result = vm.execute_unchecked(&chunk, &primitive_results);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_stack_depth_tracking() {
+        let mut vm = Vm::<16>::new();
+        assert_eq!(vm.stack_depth(), 0);
+
+        // Execute something that uses stack
+        let chunk = BytecodeChunk::new(
+            1,
+            vec![
+                Opcode::PushMatch(0),
+                Opcode::PushMatch(1),
+                Opcode::And,
+                Opcode::ReturnMatch(1),
+            ],
+        );
+        let primitive_results = [true, true];
+
+        let _result = vm.execute(&chunk, &primitive_results).unwrap();
+
+        // After execution, stack should be reset
+        assert_eq!(vm.stack_depth(), 0);
+    }
+
+    #[test]
+    fn test_push_match_error_handling() {
+        let mut vm = Vm::<16>::new();
+
+        // Test invalid primitive ID
+        let result = vm.push_match(999, &[true, false]);
+        assert!(matches!(result, Err(SigmaError::InvalidPrimitiveId(999))));
+
+        // Test stack overflow by manually filling stack
+        for i in 0..16 {
+            let result = vm.push_match(0, &[true]);
+            if i < 16 {
+                assert!(result.is_ok());
+            }
+        }
+
+        // Next push should overflow
+        let result = vm.push_match(0, &[true]);
+        assert!(matches!(result, Err(SigmaError::StackOverflow)));
+    }
+
+    #[test]
+    fn test_vm_with_large_stack() {
+        let mut vm = Vm::<1024>::new();
+        assert_eq!(vm.stack_depth(), 0);
+
+        // Test that we can handle large operations
+        let mut opcodes = Vec::new();
+        for i in 0..100 {
+            opcodes.push(Opcode::PushMatch(i % 10)); // Use modulo to stay within primitive bounds
+        }
+        for _ in 0..99 {
+            opcodes.push(Opcode::And);
+        }
+        opcodes.push(Opcode::ReturnMatch(1));
+
+        let chunk = BytecodeChunk::new(1, opcodes);
+        let primitive_results = [true; 10];
+
+        let result = vm.execute(&chunk, &primitive_results).unwrap();
+        assert_eq!(result, Some(1));
     }
 }

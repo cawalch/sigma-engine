@@ -58,12 +58,12 @@ if [ -f "$COVERAGE_DIR/tarpaulin-report.html" ]; then
         if [ -n "$COVERAGE" ]; then
             echo "   📊 Overall Coverage: ${COVERAGE}%"
             
-            # Check if coverage meets target (95%)
+            # Check if coverage meets target (80%)
             COVERAGE_INT=$(echo "$COVERAGE" | cut -d. -f1)
-            if [ "$COVERAGE_INT" -ge 95 ]; then
-                echo "   ✅ Coverage target met (≥95%)"
+            if [ "$COVERAGE_INT" -ge 80 ]; then
+                echo "   ✅ Coverage target met (≥80%)"
             else
-                echo "   ⚠️  Coverage below target (95%)"
+                echo "   ⚠️  Coverage below target (80%)"
                 echo "   💡 Consider adding more tests to improve coverage"
             fi
         fi

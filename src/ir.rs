@@ -57,6 +57,14 @@ impl Primitive {
     }
 }
 
+/// Complexity classification for bytecode chunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkComplexity {
+    Simple,
+    Medium,
+    Complex,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BytecodeChunk {
     pub rule_id: RuleId,
@@ -65,6 +73,7 @@ pub struct BytecodeChunk {
     pub max_stack_depth: usize,
     pub max_primitive_id: Option<PrimitiveId>,
     pub is_validated: bool,
+    pub complexity: ChunkComplexity,
 }
 
 impl BytecodeChunk {
@@ -72,6 +81,7 @@ impl BytecodeChunk {
         let max_stack_depth = Self::calculate_max_stack_depth(&opcodes);
         let max_primitive_id = Self::find_max_primitive_id(&opcodes);
         let is_validated = Self::validate_bytecode_structure(&opcodes);
+        let complexity = Self::analyze_complexity(&opcodes, max_stack_depth);
 
         Self {
             rule_id,
@@ -80,6 +90,7 @@ impl BytecodeChunk {
             max_stack_depth,
             max_primitive_id,
             is_validated,
+            complexity,
         }
     }
 
@@ -87,6 +98,7 @@ impl BytecodeChunk {
         let max_stack_depth = Self::calculate_max_stack_depth(&opcodes);
         let max_primitive_id = Self::find_max_primitive_id(&opcodes);
         let is_validated = Self::validate_bytecode_structure(&opcodes);
+        let complexity = Self::analyze_complexity(&opcodes, max_stack_depth);
 
         Self {
             rule_id,
@@ -95,6 +107,7 @@ impl BytecodeChunk {
             max_stack_depth,
             max_primitive_id,
             is_validated,
+            complexity,
         }
     }
 
@@ -111,9 +124,7 @@ impl BytecodeChunk {
                 Opcode::And | Opcode::Or => {
                     current_depth = current_depth.saturating_sub(1);
                 }
-                Opcode::Not => {
-                    // No net change
-                }
+                Opcode::Not => {}
                 Opcode::ReturnMatch(_) => {
                     current_depth = current_depth.saturating_sub(1);
                 }
@@ -172,15 +183,7 @@ impl BytecodeChunk {
         stack_depth == 0
     }
 
-    /// Check if this bytecode chunk can be safely executed with unchecked methods.
-    ///
-    /// # Arguments
-    /// * `primitive_results_len` - The length of the primitive results array
-    /// * `vm_stack_size` - The VM stack size to check against
-    ///
-    /// # Returns
-    /// * `true` if safe for unchecked execution
-    /// * `false` if checked execution should be used
+    /// Check if this chunk can be safely executed unchecked.
     pub fn can_execute_unchecked(
         &self,
         primitive_results_len: usize,
@@ -201,6 +204,28 @@ impl BytecodeChunk {
         }
 
         true
+    }
+
+    /// Analyze bytecode complexity for adaptive execution.
+    fn analyze_complexity(opcodes: &[Opcode], max_stack_depth: usize) -> ChunkComplexity {
+        let opcode_count = opcodes.len();
+        let mut logical_op_count = 0;
+
+        for opcode in opcodes {
+            match opcode {
+                Opcode::And | Opcode::Or | Opcode::Not => {
+                    logical_op_count += 1;
+                }
+                _ => {}
+            }
+        }
+        if opcode_count <= 5 && max_stack_depth <= 2 && logical_op_count <= 1 {
+            ChunkComplexity::Simple
+        } else if opcode_count <= 15 && max_stack_depth <= 4 && logical_op_count <= 5 {
+            ChunkComplexity::Medium
+        } else {
+            ChunkComplexity::Complex
+        }
     }
 }
 

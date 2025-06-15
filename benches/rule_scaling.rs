@@ -10,12 +10,12 @@ use serde_json::Value;
 use sigma_engine::{Compiler, Primitive, Vm};
 use std::collections::HashMap;
 
-/// Simplified primitive matcher for benchmarking
 struct BenchPrimitiveMatcher {
     primitive_strategies: HashMap<u32, BenchMatchStrategy>,
     aho_corasick: Option<AhoCorasick>,
     ac_pattern_to_primitive: HashMap<usize, u32>,
     regex_patterns: Vec<(u32, Regex)>,
+    cached_results: std::cell::RefCell<Vec<bool>>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +26,25 @@ enum BenchMatchStrategy {
 }
 
 impl BenchPrimitiveMatcher {
+    fn event_to_search_string(event: &Value) -> String {
+        match event {
+            Value::Object(map) => {
+                let mut parts = Vec::new();
+                for (key, value) in map {
+                    parts.push(key.clone());
+                    match value {
+                        Value::String(s) => parts.push(s.clone()),
+                        Value::Number(n) => parts.push(n.to_string()),
+                        Value::Bool(b) => parts.push(b.to_string()),
+                        _ => parts.push(value.to_string()),
+                    }
+                }
+                parts.join(" ")
+            }
+            _ => event.to_string(),
+        }
+    }
+
     fn new(primitives: &[Primitive]) -> anyhow::Result<Self> {
         let mut primitive_strategies = HashMap::new();
         let mut substring_patterns = Vec::new();
@@ -59,7 +78,6 @@ impl BenchPrimitiveMatcher {
                     }
                 }
                 _ => {
-                    // Default to exact match
                     if let Some(value) = primitive.values.first() {
                         primitive_strategies
                             .insert(id, BenchMatchStrategy::Exact(value.to_string()));
@@ -79,57 +97,99 @@ impl BenchPrimitiveMatcher {
             aho_corasick,
             ac_pattern_to_primitive,
             regex_patterns,
+            cached_results: std::cell::RefCell::new(Vec::new()),
         })
     }
 
-    fn evaluate_primitives(&self, event: &Value, primitive_count: usize) -> Vec<bool> {
-        let mut results = vec![false; primitive_count];
+    fn evaluate_primitives_with_callback<F, R>(
+        &self,
+        event: &Value,
+        primitive_count: usize,
+        callback: F,
+    ) -> R
+    where
+        F: FnOnce(&[bool]) -> R,
+    {
+        let mut cached_results = self.cached_results.borrow_mut();
+        cached_results.clear();
+        cached_results.resize(primitive_count, false);
 
-        // Convert event to string for pattern matching
-        let event_str = event.to_string();
+        let event_str = Self::event_to_search_string(event);
 
-        // Evaluate AhoCorasick patterns
         if let Some(ref ac) = self.aho_corasick {
             for mat in ac.find_iter(&event_str) {
                 if let Some(&primitive_id) =
                     self.ac_pattern_to_primitive.get(&mat.pattern().as_usize())
                 {
-                    if (primitive_id as usize) < results.len() {
-                        results[primitive_id as usize] = true;
+                    if (primitive_id as usize) < cached_results.len() {
+                        cached_results[primitive_id as usize] = true;
                     }
                 }
             }
         }
 
-        // Evaluate regex patterns
         for (primitive_id, regex) in &self.regex_patterns {
-            if (*primitive_id as usize) < results.len() {
-                results[*primitive_id as usize] = regex.is_match(&event_str);
+            if (*primitive_id as usize) < cached_results.len() {
+                cached_results[*primitive_id as usize] = regex.is_match(&event_str);
             }
         }
 
-        // Evaluate exact matches and other strategies
         for (&primitive_id, strategy) in &self.primitive_strategies {
-            if (primitive_id as usize) < results.len() {
+            if (primitive_id as usize) < cached_results.len() {
                 match strategy {
                     BenchMatchStrategy::Exact(value) => {
-                        results[primitive_id as usize] = event_str.contains(value);
+                        cached_results[primitive_id as usize] = event_str.contains(value);
                     }
-                    BenchMatchStrategy::Contains(_) => {
-                        // Already handled by AhoCorasick
-                    }
-                    BenchMatchStrategy::Regex(_) => {
-                        // Already handled by regex patterns
+                    BenchMatchStrategy::Contains(_) => {}
+                    BenchMatchStrategy::Regex(_) => {}
+                }
+            }
+        }
+
+        callback(&cached_results)
+    }
+
+    fn evaluate_primitives(&self, event: &Value, primitive_count: usize) -> Vec<bool> {
+        let mut cached_results = self.cached_results.borrow_mut();
+        cached_results.clear();
+        cached_results.resize(primitive_count, false);
+
+        let event_str = Self::event_to_search_string(event);
+
+        if let Some(ref ac) = self.aho_corasick {
+            for mat in ac.find_iter(&event_str) {
+                if let Some(&primitive_id) =
+                    self.ac_pattern_to_primitive.get(&mat.pattern().as_usize())
+                {
+                    if (primitive_id as usize) < cached_results.len() {
+                        cached_results[primitive_id as usize] = true;
                     }
                 }
             }
         }
 
-        results
+        for (primitive_id, regex) in &self.regex_patterns {
+            if (*primitive_id as usize) < cached_results.len() {
+                cached_results[*primitive_id as usize] = regex.is_match(&event_str);
+            }
+        }
+
+        for (&primitive_id, strategy) in &self.primitive_strategies {
+            if (primitive_id as usize) < cached_results.len() {
+                match strategy {
+                    BenchMatchStrategy::Exact(value) => {
+                        cached_results[primitive_id as usize] = event_str.contains(value);
+                    }
+                    BenchMatchStrategy::Contains(_) => {}
+                    BenchMatchStrategy::Regex(_) => {}
+                }
+            }
+        }
+
+        cached_results.clone()
     }
 }
 
-/// Generate a test rule with the given ID and varying complexity
 fn generate_test_rule(rule_id: u32, complexity: RuleComplexity) -> String {
     match complexity {
         RuleComplexity::Simple => {
@@ -249,7 +309,6 @@ enum RuleComplexity {
     Complex,
 }
 
-/// Setup test environment with specified number of rules
 fn setup_test_environment_with_rules(
     rule_count: usize,
     complexity: RuleComplexity,
@@ -262,14 +321,12 @@ fn setup_test_environment_with_rules(
     let mut compiler = Compiler::new();
     let mut chunks = Vec::new();
 
-    // Generate and compile rules
     for i in 0..rule_count {
         let rule_yaml = generate_test_rule(i as u32, complexity);
         match compiler.compile_rule(&rule_yaml) {
             Ok(chunk) => chunks.push(chunk),
             Err(e) => {
                 eprintln!("Failed to compile rule {}: {}", i, e);
-                // Create a simple fallback rule
                 let fallback_rule = format!(
                     r#"
 title: Fallback Rule {}
@@ -300,7 +357,6 @@ detection:
     (chunks, matcher, vm, ruleset.primitive_count())
 }
 
-/// Generate test events for benchmarking
 fn generate_test_events(count: usize) -> Vec<Value> {
     let mut events = Vec::new();
 
@@ -338,11 +394,9 @@ fn generate_test_events(count: usize) -> Vec<Value> {
     events
 }
 
-/// Benchmark rule scaling with simple rules
 fn bench_rule_scaling_simple(c: &mut Criterion) {
     let mut group = c.benchmark_group("rule_scaling_simple");
 
-    // Test different rule counts: 10, 50, 100, 500, 1000, 2000, 5000
     for rule_count in [10, 50, 100, 500, 1000, 2000, 5000].iter() {
         let (chunks, matcher, mut vm, primitive_count) =
             setup_test_environment_with_rules(*rule_count, RuleComplexity::Simple);
@@ -355,12 +409,15 @@ fn bench_rule_scaling_simple(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     for event in &test_events {
-                        let primitive_results = matcher.evaluate_primitives(event, primitive_count);
-
-                        // Execute all rules
-                        for chunk in &chunks {
-                            let _result = vm.execute(chunk, &primitive_results);
-                        }
+                        matcher.evaluate_primitives_with_callback(
+                            event,
+                            primitive_count,
+                            |primitive_results| {
+                                for chunk in &chunks {
+                                    let _result = vm.execute_optimized(chunk, primitive_results);
+                                }
+                            },
+                        );
                     }
                 })
             },
@@ -370,7 +427,6 @@ fn bench_rule_scaling_simple(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark rule scaling with medium complexity rules
 fn bench_rule_scaling_medium(c: &mut Criterion) {
     let mut group = c.benchmark_group("rule_scaling_medium");
 
@@ -386,11 +442,15 @@ fn bench_rule_scaling_medium(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     for event in &test_events {
-                        let primitive_results = matcher.evaluate_primitives(event, primitive_count);
-
-                        for chunk in &chunks {
-                            let _result = vm.execute(chunk, &primitive_results);
-                        }
+                        matcher.evaluate_primitives_with_callback(
+                            event,
+                            primitive_count,
+                            |primitive_results| {
+                                for chunk in &chunks {
+                                    let _result = vm.execute_optimized(chunk, primitive_results);
+                                }
+                            },
+                        );
                     }
                 })
             },
@@ -400,7 +460,6 @@ fn bench_rule_scaling_medium(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark rule scaling with complex rules
 fn bench_rule_scaling_complex(c: &mut Criterion) {
     let mut group = c.benchmark_group("rule_scaling_complex");
 
@@ -416,11 +475,15 @@ fn bench_rule_scaling_complex(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     for event in &test_events {
-                        let primitive_results = matcher.evaluate_primitives(event, primitive_count);
-
-                        for chunk in &chunks {
-                            let _result = vm.execute(chunk, &primitive_results);
-                        }
+                        matcher.evaluate_primitives_with_callback(
+                            event,
+                            primitive_count,
+                            |primitive_results| {
+                                for chunk in &chunks {
+                                    let _result = vm.execute_optimized(chunk, primitive_results);
+                                }
+                            },
+                        );
                     }
                 })
             },
@@ -430,12 +493,10 @@ fn bench_rule_scaling_complex(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark with mixed rule complexities (realistic scenario)
 fn bench_rule_scaling_mixed(c: &mut Criterion) {
     let mut group = c.benchmark_group("rule_scaling_mixed");
 
     for total_rules in [100, 500, 1000, 2000, 5000].iter() {
-        // Mix: 60% simple, 30% medium, 10% complex (realistic distribution)
         let simple_count = (total_rules * 6) / 10;
         let medium_count = (total_rules * 3) / 10;
         let complex_count = total_rules - simple_count - medium_count;
@@ -443,10 +504,8 @@ fn bench_rule_scaling_mixed(c: &mut Criterion) {
         let mut compiler = Compiler::new();
         let mut chunks = Vec::new();
 
-        // Generate mixed complexity rules
         let mut rule_id = 0u32;
 
-        // Simple rules
         for _ in 0..simple_count {
             let rule_yaml = generate_test_rule(rule_id, RuleComplexity::Simple);
             if let Ok(chunk) = compiler.compile_rule(&rule_yaml) {
@@ -455,7 +514,6 @@ fn bench_rule_scaling_mixed(c: &mut Criterion) {
             rule_id += 1;
         }
 
-        // Medium rules
         for _ in 0..medium_count {
             let rule_yaml = generate_test_rule(rule_id, RuleComplexity::Medium);
             if let Ok(chunk) = compiler.compile_rule(&rule_yaml) {
@@ -464,7 +522,6 @@ fn bench_rule_scaling_mixed(c: &mut Criterion) {
             rule_id += 1;
         }
 
-        // Complex rules
         for _ in 0..complex_count {
             let rule_yaml = generate_test_rule(rule_id, RuleComplexity::Complex);
             if let Ok(chunk) = compiler.compile_rule(&rule_yaml) {
@@ -487,11 +544,15 @@ fn bench_rule_scaling_mixed(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     for event in &test_events {
-                        let primitive_results = matcher.evaluate_primitives(event, primitive_count);
-
-                        for chunk in &chunks {
-                            let _result = vm.execute(chunk, &primitive_results);
-                        }
+                        matcher.evaluate_primitives_with_callback(
+                            event,
+                            primitive_count,
+                            |primitive_results| {
+                                for chunk in &chunks {
+                                    let _result = vm.execute_optimized(chunk, primitive_results);
+                                }
+                            },
+                        );
                     }
                 })
             },
@@ -501,7 +562,6 @@ fn bench_rule_scaling_mixed(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark primitive matching scaling
 fn bench_primitive_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("primitive_scaling");
 
@@ -527,7 +587,6 @@ fn bench_primitive_scaling(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark compilation time scaling
 fn bench_compilation_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("compilation_scaling");
 
@@ -556,7 +615,6 @@ fn bench_compilation_scaling(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark single event processing across many rules
 fn bench_single_event_many_rules(c: &mut Criterion) {
     let mut group = c.benchmark_group("single_event_many_rules");
 
@@ -598,18 +656,15 @@ fn bench_single_event_many_rules(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark memory usage patterns with large rule sets
 fn bench_memory_patterns(c: &mut Criterion) {
     let mut group = c.benchmark_group("memory_patterns");
 
-    // Test memory allocation patterns with different rule counts
     for rule_count in [1000, 2000, 5000].iter() {
         group.bench_with_input(
             BenchmarkId::new("memory_allocation", rule_count),
             rule_count,
             |b, &rule_count| {
                 b.iter(|| {
-                    // Setup and teardown to measure allocation patterns
                     let (chunks, matcher, mut vm, primitive_count) =
                         setup_test_environment_with_rules(rule_count, RuleComplexity::Medium);
 
@@ -623,10 +678,8 @@ fn bench_memory_patterns(c: &mut Criterion) {
                         }
                     }
 
-                    // Force cleanup
                     drop(chunks);
                     drop(matcher);
-                    // VM doesn't need explicit drop
                     let _ = vm;
                 })
             },

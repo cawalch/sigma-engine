@@ -10,29 +10,6 @@ use std::collections::HashMap;
 use super::parser::ConditionAst;
 
 /// Generate bytecode from a SIGMA condition AST.
-///
-/// This function takes a parsed condition AST and generates a sequence of
-/// opcodes that can be executed by the SIGMA BVM.
-///
-/// # Arguments
-/// * `ast` - The parsed condition AST
-/// * `selection_map` - Mapping from selection names to primitive IDs
-///
-/// # Returns
-/// A vector of opcodes representing the condition logic.
-///
-/// # Examples
-/// ```rust,ignore
-/// use sigma_engine::compiler::codegen::generate_bytecode;
-/// use sigma_engine::compiler::parser::ConditionAst;
-/// use std::collections::HashMap;
-///
-/// let ast = ConditionAst::Identifier("selection".to_string());
-/// let mut selection_map = HashMap::new();
-/// selection_map.insert("selection".to_string(), vec![0]);
-///
-/// let opcodes = generate_bytecode(&ast, &selection_map)?;
-/// ```
 pub(crate) fn generate_bytecode(
     ast: &ConditionAst,
     selection_map: &HashMap<String, Vec<PrimitiveId>>,
@@ -43,10 +20,6 @@ pub(crate) fn generate_bytecode(
 }
 
 /// Recursively generate bytecode from an AST node.
-///
-/// This function implements the core bytecode generation logic, handling
-/// all SIGMA condition constructs including basic boolean logic and
-/// SIGMA-specific patterns like count expressions.
 fn generate_bytecode_recursive(
     ast: &ConditionAst,
     selection_map: &HashMap<String, Vec<PrimitiveId>>,
@@ -235,8 +208,7 @@ fn generate_count_pattern_bytecode(
     generate_count_bytecode(&matching_selections, count, opcodes)
 }
 
-/// Generate bytecode for count-based patterns (e.g., "2 of selection*").
-/// This implements counting logic using boolean combinations.
+/// Generate bytecode for count-based patterns.
 fn generate_count_bytecode(
     matching_selections: &[&Vec<PrimitiveId>],
     required_count: u32,
@@ -880,5 +852,112 @@ mod tests {
         // sel2: PushMatch(2), PushMatch(3), PushMatch(4), And, And
         // Final: Or
         assert_eq!(opcodes.len(), 9);
+    }
+
+    #[test]
+    fn test_generate_combination_bytecode_no_combinations() {
+        // Test the error case where no valid combinations are found
+        // This is a bit tricky to trigger since generate_combinations should always
+        // return at least one combination for valid inputs, but we can test the error path
+        let matching_selections = vec![];
+        let required_count = 1;
+        let mut opcodes = Vec::new();
+
+        // This should trigger the "No valid combinations found" error
+        // by calling generate_combinations with empty selections
+        let combinations = generate_combinations(0, 1);
+        assert_eq!(combinations.len(), 0);
+
+        // Test the actual error path in generate_combination_bytecode
+        let result =
+            generate_combination_bytecode(&matching_selections, required_count, &mut opcodes);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("No valid combinations found for count pattern"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_generate_combinations_edge_case_zero_selections() {
+        // Test edge case with zero selections
+        let combinations = generate_combinations(0, 0);
+        assert_eq!(combinations.len(), 1);
+        assert_eq!(combinations[0], vec![]);
+
+        let combinations = generate_combinations(0, 1);
+        assert_eq!(combinations.len(), 0);
+    }
+
+    #[test]
+    fn test_count_pattern_with_complex_combinations() {
+        // Test a more complex count pattern that exercises the combination logic
+        let ast = ConditionAst::CountOfPattern(3, "sel*".to_string());
+        let mut selection_map = HashMap::new();
+        selection_map.insert("sel1".to_string(), vec![0]);
+        selection_map.insert("sel2".to_string(), vec![1]);
+        selection_map.insert("sel3".to_string(), vec![2]);
+        selection_map.insert("sel4".to_string(), vec![3]);
+        selection_map.insert("sel5".to_string(), vec![4]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Should generate combinations for 3 of 5 selections
+        // This should create multiple OR branches for different combinations
+        assert!(opcodes.len() > 10); // Should be quite a few opcodes
+        assert!(opcodes.iter().any(|op| matches!(op, Opcode::Or)));
+        assert!(opcodes.iter().any(|op| matches!(op, Opcode::And)));
+    }
+
+    #[test]
+    fn test_all_of_them_with_underscore_selections() {
+        let ast = ConditionAst::AllOfThem;
+        let mut selection_map = HashMap::new();
+        selection_map.insert("_internal".to_string(), vec![0]);
+        selection_map.insert("selection1".to_string(), vec![1]);
+        selection_map.insert("_another".to_string(), vec![2]);
+        selection_map.insert("selection2".to_string(), vec![3]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Should only include non-underscore selections (selection1 and selection2)
+        assert_eq!(opcodes.len(), 3); // Two PushMatch operations and one And
+
+        // Check that we have the right opcodes (order may vary due to HashMap)
+        let push_matches: Vec<_> = opcodes
+            .iter()
+            .filter_map(|op| match op {
+                Opcode::PushMatch(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(push_matches.len(), 2);
+        assert!(push_matches.contains(&1)); // selection1
+        assert!(push_matches.contains(&3)); // selection2
+        assert!(matches!(opcodes.last(), Some(Opcode::And))); // Should end with And
+    }
+
+    #[test]
+    fn test_one_of_them_with_empty_primitives() {
+        let ast = ConditionAst::OneOfThem;
+        let mut selection_map = HashMap::new();
+        selection_map.insert("empty1".to_string(), vec![]);
+        selection_map.insert("selection1".to_string(), vec![1]);
+        selection_map.insert("empty2".to_string(), vec![]);
+
+        let result = generate_bytecode(&ast, &selection_map);
+        assert!(result.is_ok());
+
+        let opcodes = result.unwrap();
+        // Should only include selections with non-empty primitives
+        assert_eq!(opcodes.len(), 1); // Only PushMatch(1)
+        assert!(matches!(opcodes[0], Opcode::PushMatch(1)));
     }
 }
