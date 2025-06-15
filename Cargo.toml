@@ -44,8 +44,10 @@ regex = { version = "1.10", optional = true }
 default = []
 # Enable examples and demo functionality
 examples = ["dep:serde_json", "dep:aho-corasick", "dep:regex"]
+# Enable performance metrics and monitoring
+metrics = []
 # Enable all optional features
-full = ["examples"]
+full = ["examples", "metrics"]
 
 [dev-dependencies]
 # Development and testing dependencies
@@ -79,6 +81,11 @@ required-features = ["examples"]
 [[example]]
 name = "engine_demo"
 path = "examples/engine_demo.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "hybrid_execution_demo"
+path = "examples/hybrid_execution_demo.rs"
 required-features = ["examples"]
 
 [profile.bench]

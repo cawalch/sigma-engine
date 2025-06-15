@@ -7,10 +7,7 @@ use crate::error::{Result, SigmaError};
 use crate::ir::PrimitiveId;
 use std::collections::HashMap;
 
-/// Represents tokens in a SIGMA condition expression.
-///
-/// These tokens are the building blocks of SIGMA condition expressions,
-/// supporting both basic boolean logic and SIGMA-specific constructs.
+/// Tokens in a SIGMA condition expression.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Token {
     Identifier(String),
@@ -26,11 +23,7 @@ pub(crate) enum Token {
     Wildcard(String),
 }
 
-/// Abstract Syntax Tree for SIGMA condition expressions.
-///
-/// This AST represents the parsed structure of a SIGMA condition,
-/// supporting both basic boolean logic and SIGMA-specific constructs
-/// like count patterns.
+/// AST for SIGMA condition expressions.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) enum ConditionAst {
@@ -45,10 +38,7 @@ pub(crate) enum ConditionAst {
     CountOfPattern(u32, String),
 }
 
-/// Recursive descent parser for SIGMA condition expressions.
-///
-/// This parser implements a standard recursive descent algorithm
-/// with proper operator precedence for SIGMA condition expressions.
+/// Recursive descent parser for SIGMA conditions.
 pub(crate) struct ConditionParser<'a> {
     tokens: &'a [Token],
     position: usize,
@@ -56,11 +46,6 @@ pub(crate) struct ConditionParser<'a> {
 }
 
 impl<'a> ConditionParser<'a> {
-    /// Create a new condition parser.
-    ///
-    /// # Arguments
-    /// * `tokens` - The tokenized condition expression
-    /// * `selection_map` - Mapping from selection names to primitive IDs
     pub(crate) fn new(
         tokens: &'a [Token],
         selection_map: &'a HashMap<String, Vec<PrimitiveId>>,
@@ -83,8 +68,6 @@ impl<'a> ConditionParser<'a> {
     }
 
     /// Parse OR expressions (lowest precedence).
-    ///
-    /// Grammar: or_expr := and_expr ('or' and_expr)*
     pub(crate) fn parse_or_expression(&mut self) -> Result<ConditionAst> {
         let mut left = self.parse_and_expression()?;
 
@@ -98,8 +81,6 @@ impl<'a> ConditionParser<'a> {
     }
 
     /// Parse AND expressions (medium precedence).
-    ///
-    /// Grammar: and_expr := not_expr ('and' not_expr)*
     fn parse_and_expression(&mut self) -> Result<ConditionAst> {
         let mut left = self.parse_not_expression()?;
 
@@ -113,8 +94,6 @@ impl<'a> ConditionParser<'a> {
     }
 
     /// Parse NOT expressions (highest precedence).
-    ///
-    /// Grammar: not_expr := 'not' primary | primary
     fn parse_not_expression(&mut self) -> Result<ConditionAst> {
         if let Some(Token::Not) = self.current_token() {
             self.advance();
@@ -125,9 +104,7 @@ impl<'a> ConditionParser<'a> {
         }
     }
 
-    /// Parse primary expressions (identifiers, parentheses, special constructs).
-    ///
-    /// Grammar: primary := '(' or_expr ')' | identifier | number 'of' (them | pattern) | 'all' 'of' (them | pattern)
+    /// Parse primary expressions.
     fn parse_primary(&mut self) -> Result<ConditionAst> {
         match self.current_token() {
             Some(Token::LeftParen) => {
@@ -221,19 +198,7 @@ impl<'a> ConditionParser<'a> {
     }
 }
 
-/// Tokenize a SIGMA condition string into tokens.
-///
-/// This function performs lexical analysis on a SIGMA condition string,
-/// breaking it down into tokens that can be parsed into an AST.
-///
-/// # Arguments
-/// * `condition` - The condition string to tokenize
-///
-/// # Returns
-/// A vector of tokens representing the condition expression.
-///
-/// # Errors
-/// Returns an error if the condition contains invalid syntax.
+/// Tokenize a SIGMA condition string.
 pub(crate) fn tokenize_condition(condition: &str) -> Result<Vec<Token>> {
     let mut tokens = Vec::new();
     let mut chars = condition.chars().peekable();
@@ -304,14 +269,7 @@ pub(crate) fn tokenize_condition(condition: &str) -> Result<Vec<Token>> {
     Ok(tokens)
 }
 
-/// Parse tokens into an AST using recursive descent parsing.
-///
-/// # Arguments
-/// * `tokens` - The tokens to parse
-/// * `selection_map` - Mapping from selection names to primitive IDs
-///
-/// # Returns
-/// The parsed AST representing the condition expression.
+/// Parse tokens into an AST.
 pub(crate) fn parse_tokens(
     tokens: &[Token],
     selection_map: &HashMap<String, Vec<PrimitiveId>>,
@@ -609,6 +567,81 @@ mod tests {
 
         if let Err(SigmaError::CompilationError(msg)) = result {
             assert!(msg.contains("Empty condition"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_parse_missing_closing_parenthesis() {
+        let tokens = vec![
+            Token::LeftParen,
+            Token::Identifier("selection1".to_string()),
+            Token::And,
+            Token::Identifier("selection2".to_string()),
+            // Missing RightParen
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("Expected closing parenthesis"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_after_all() {
+        let tokens = vec![
+            Token::All,
+            Token::Identifier("invalid".to_string()), // Should be "of"
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("Expected 'of' after 'all'"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_after_of() {
+        let tokens = vec![
+            Token::All,
+            Token::Of,
+            Token::Identifier("invalid".to_string()), // Should be "them" or wildcard
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("Expected 'them' or pattern after 'of'"));
+        } else {
+            panic!("Expected CompilationError");
+        }
+    }
+
+    #[test]
+    fn test_parse_unexpected_token() {
+        let tokens = vec![
+            Token::RightParen, // Unexpected token at start
+        ];
+        let selection_map = create_test_selection_map();
+
+        let result = parse_tokens(&tokens, &selection_map);
+        assert!(result.is_err());
+
+        if let Err(SigmaError::CompilationError(msg)) = result {
+            assert!(msg.contains("Unexpected token in condition"));
         } else {
             panic!("Expected CompilationError");
         }

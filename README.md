@@ -10,11 +10,47 @@ The engine is designed for performance and efficiency. Key characteristics inclu
 
 ## Performance
 
+Latest benchmark results (June 15, 2025)
+
 ```
-Simple Rules:    4.05 ns/rule   (250M rules/sec)
-Complex Rules:   10.32 ns/rule  (97M rules/sec)
-End-to-End:      85.9 ns/event  (11.6M events/sec)
-2000 Rules:      5.8 µs/event   (173k events/sec)
+Rule Execution (10 rules):
+Simple Rules:    5.89 µs/10 rules    (1.70M rules/sec)
+Medium Rules:    4.88 µs/10 rules    (2.05M rules/sec)
+Complex Rules:   7.95 µs/10 rules    (1.26M rules/sec)
+
+Rule Execution (50 rules):
+Simple Rules:    7.37 µs/50 rules    (6.78M rules/sec)
+Medium Rules:    7.70 µs/50 rules    (6.49M rules/sec)
+Complex Rules:   22.5 µs/50 rules    (2.22M rules/sec)
+
+Mixed Rules (realistic distribution):
+100 Rules:       16.8 µs/100 rules   (5.95M rules/sec)
+500 Rules:       48.2 µs/500 rules   (10.4M rules/sec)
+1000 Rules:      87.0 µs/1000 rules  (11.5M rules/sec)
+2000 Rules:      137 µs/2000 rules   (14.6M rules/sec)
+
+Single Event Processing:
+100 Rules:       1.22 µs/event      (820k events/sec)
+500 Rules:       3.76 µs/event      (266k events/sec)
+1000 Rules:      7.06 µs/event      (142k events/sec)
+2000 Rules:      13.4 µs/event      (74k events/sec)
+5000 Rules:      32.5 µs/event      (31k events/sec)
+
+Production Scale (2000 rules):
+Simple:          80.2 µs/event      (12.5k events/sec)
+Medium:          118 µs/event       (8.5k events/sec)
+Complex:         242 µs/event       (4.1k events/sec)
+Mixed:           137 µs/event       (7.3k events/sec)
+
+Compilation Performance:
+10 Rules:        144 µs             (69k rules/sec)
+50 Rules:        709 µs             (71k rules/sec)
+100 Rules:       1.42 ms            (70k rules/sec)
+500 Rules:       6.97 ms            (72k rules/sec)
+1000 Rules:      13.9 ms            (72k rules/sec)
+
+Primitive Matching (constant ~58µs regardless of rule count):
+100-5000 Rules:  58.0 µs            (17k ops/sec)
 ```
 
 ## Architecture
@@ -146,8 +182,6 @@ Potential applications for SIGMA Engine include security information and event m
 ## Documentation
 
 - API Documentation (generated locally)
-- Performance Benchmarks (README_BENCHMARKING.md)
-- Profiling Guide (docs/PROFILING.md)
 - Examples (examples/)
 
 ## Examples
