@@ -1,0 +1,85 @@
+[package]
+name = "sigma-engine"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.72.0"
+authors = ["SIGMA Engine Contributors"]
+description = "High-performance SIGMA detection engine for security rules"
+documentation = "https://docs.rs/sigma-engine"
+homepage = "https://github.com/yourusername/sigma-engine"
+repository = "https://github.com/yourusername/sigma-engine"
+license = "MIT OR Apache-2.0"
+keywords = ["sigma", "detection", "security", "engine", "rules"]
+categories = ["parsing", "algorithms", "development-tools"]
+readme = "README.md"
+exclude = [
+    "target/",
+    "benches/",
+    "scripts/",
+    "docs/",
+    ".github/",
+    "*.svg",
+    "*.png",
+    "RUST_NORMALIZATION_PLAN.md",
+    "LLM.md",
+    "HYBRID_VM.md"
+]
+
+[lib]
+name = "sigma_engine"
+
+[dependencies]
+# Core runtime dependencies (kept minimal for performance)
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Optional dependencies for examples and demos
+serde_json = { version = "1.0", optional = true }
+aho-corasick = { version = "1.1", optional = true }
+regex = { version = "1.10", optional = true }
+
+[features]
+default = []
+# Enable examples and demo functionality
+examples = ["dep:serde_json", "dep:aho-corasick", "dep:regex"]
+# Enable all optional features
+full = ["examples"]
+
+[dev-dependencies]
+# Development and testing dependencies
+criterion = { version = "0.5", features = ["html_reports"] }
+serde_json = "1.0"  # Always available for tests
+aho-corasick = "1.1"  # Always available for tests
+regex = "1.10"  # Always available for tests
+
+[[bench]]
+name = "vm_execution"
+harness = false
+
+[[bench]]
+name = "end_to_end"
+harness = false
+
+[[bench]]
+name = "rule_scaling"
+harness = false
+
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "advanced_usage"
+path = "examples/advanced_usage.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "engine_demo"
+path = "examples/engine_demo.rs"
+required-features = ["examples"]
+
+[profile.bench]
+debug = true

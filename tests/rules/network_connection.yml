@@ -1,0 +1,42 @@
+title: Suspicious Network Connection
+id: "net-001"
+status: experimental
+description: Detects suspicious outbound network connections
+author: SIGMA BVM Test Suite
+date: 2025/06/15
+references:
+    - https://attack.mitre.org/techniques/T1071/
+tags:
+    - attack.command_and_control
+    - attack.t1071
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection_event:
+        EventID: 3
+    selection_process:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\cmd.exe'
+            - '\rundll32.exe'
+    selection_destination:
+        DestinationPort:
+            - 443
+            - 80
+            - 8080
+    filter_legitimate:
+        DestinationHostname|endswith:
+            - '.microsoft.com'
+            - '.windows.com'
+            - '.office.com'
+    condition: selection_event and selection_process and selection_destination and not filter_legitimate
+fields:
+    - Image
+    - DestinationIp
+    - DestinationPort
+    - DestinationHostname
+falsepositives:
+    - Legitimate software updates
+    - Administrative tools
+level: medium

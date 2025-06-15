@@ -1,0 +1,17 @@
+title: Malformed Rule for Testing
+# This rule is intentionally malformed to test error handling
+id: "malformed-001"
+status: experimental
+description: This rule has syntax errors for testing
+author: SIGMA BVM Test Suite
+date: 2025/06/15
+logsource:
+    category: test
+    product: test
+detection:
+    selection:
+        EventID: 1234
+    # Missing condition - this should cause an error
+fields:
+    - EventID
+level: low

@@ -1,0 +1,10 @@
+{"EventID": "4624", "LogonType": "2", "TargetUserName": "admin", "SourceIP": "192.168.1.100", "Timestamp": "2024-01-15T10:30:00Z"}
+{"EventID": "4625", "LogonType": "2", "TargetUserName": "hacker", "SourceIP": "10.0.0.1", "Timestamp": "2024-01-15T10:31:00Z"}
+{"EventID": "4624", "LogonType": "3", "TargetUserName": "service_account", "SourceIP": "192.168.1.50", "Timestamp": "2024-01-15T10:32:00Z"}
+{"ProcessName": "cmd.exe", "CommandLine": "whoami", "ParentProcessName": "explorer.exe", "Timestamp": "2024-01-15T10:33:00Z"}
+{"ProcessName": "powershell.exe", "CommandLine": "Get-Process", "ParentProcessName": "cmd.exe", "Timestamp": "2024-01-15T10:34:00Z"}
+{"EventID": "4624", "LogonType": "10", "TargetUserName": "rdp_user", "SourceIP": "203.0.113.1", "Timestamp": "2024-01-15T10:35:00Z"}
+{"ProcessName": "notepad.exe", "CommandLine": "notepad.exe C:\\temp\\file.txt", "ParentProcessName": "explorer.exe", "Timestamp": "2024-01-15T10:36:00Z"}
+{"EventID": "4648", "LogonType": "2", "TargetUserName": "admin", "SourceIP": "192.168.1.100", "Timestamp": "2024-01-15T10:37:00Z"}
+{"ProcessName": "calc.exe", "CommandLine": "calc.exe", "ParentProcessName": "explorer.exe", "Timestamp": "2024-01-15T10:38:00Z"}
+{"EventID": "4624", "LogonType": "2", "TargetUserName": "user123", "SourceIP": "192.168.1.200", "Timestamp": "2024-01-15T10:39:00Z"}

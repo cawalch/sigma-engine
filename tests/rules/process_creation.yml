@@ -1,0 +1,40 @@
+title: Suspicious Process Creation
+id: "proc-001"
+status: stable
+description: Detects suspicious process creation patterns
+author: SIGMA BVM Test Suite
+date: 2025/06/15
+references:
+    - https://attack.mitre.org/techniques/T1059/
+tags:
+    - attack.execution
+    - attack.t1059
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_process:
+        EventID: 4688
+        NewProcessName|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\wscript.exe'
+    selection_parent:
+        ParentProcessName|endswith:
+            - '\winword.exe'
+            - '\excel.exe'
+            - '\outlook.exe'
+    selection_cmdline:
+        CommandLine|contains:
+            - 'download'
+            - 'invoke'
+            - 'base64'
+    condition: selection_process and selection_parent and selection_cmdline
+fields:
+    - NewProcessName
+    - ParentProcessName
+    - CommandLine
+    - SubjectUserName
+falsepositives:
+    - Legitimate automation scripts
+level: high

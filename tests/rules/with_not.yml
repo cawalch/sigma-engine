@@ -1,0 +1,18 @@
+title: Rule with NOT condition
+id: abcdef12-3456-7890-abcd-ef1234567890
+description: Demonstrates NOT logic in conditions
+author: Test Author
+date: 2024-01-01
+logsource:
+    category: network
+    product: firewall
+detection:
+    selection:
+        Action: "allow"
+        Protocol: "tcp"
+    filter:
+        DestinationPort: 443
+    condition: selection and not filter
+level: medium
+tags:
+    - attack.command_and_control

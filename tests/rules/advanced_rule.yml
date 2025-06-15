@@ -1,0 +1,37 @@
+title: Advanced Windows Logon Detection
+id: "adv-001"
+status: experimental
+description: Detects advanced logon patterns with multiple conditions
+author: SIGMA BVM Test Suite
+date: 2025/06/15
+references:
+    - https://attack.mitre.org/techniques/T1078/
+tags:
+    - attack.initial_access
+    - attack.t1078
+logsource:
+    category: authentication
+    product: windows
+detection:
+    selection_logon:
+        EventID: 4624
+        LogonType: [2, 3, 10]
+    selection_user:
+        TargetUserName|contains:
+            - 'admin'
+            - 'service'
+    selection_source:
+        IpAddress|startswith:
+            - '192.168.'
+            - '10.0.'
+    filter_system:
+        TargetUserName: 'SYSTEM'
+    condition: selection_logon and selection_user and selection_source and not filter_system
+fields:
+    - TargetUserName
+    - IpAddress
+    - LogonType
+    - WorkstationName
+falsepositives:
+    - Legitimate administrative access
+level: medium

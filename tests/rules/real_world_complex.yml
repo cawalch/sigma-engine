@@ -1,0 +1,109 @@
+title: Advanced Persistent Threat Detection
+id: "apt-001"
+status: experimental
+description: Detects sophisticated APT techniques with multiple indicators
+author: SIGMA BVM Test Suite
+date: 2025/06/15
+references:
+    - https://attack.mitre.org/techniques/T1055/
+    - https://attack.mitre.org/techniques/T1027/
+    - https://attack.mitre.org/techniques/T1140/
+tags:
+    - attack.defense_evasion
+    - attack.t1055
+    - attack.t1027
+    - attack.t1140
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    # Process injection indicators
+    selection_injection1:
+        Image|endswith:
+            - '\rundll32.exe'
+            - '\regsvr32.exe'
+            - '\mshta.exe'
+        CommandLine|contains:
+            - 'javascript:'
+            - 'vbscript:'
+            - 'data:'
+    
+    selection_injection2:
+        Image|endswith: '\powershell.exe'
+        CommandLine|contains:
+            - 'Invoke-Expression'
+            - 'IEX'
+            - 'DownloadString'
+            - 'EncodedCommand'
+    
+    # Obfuscation indicators
+    selection_obfuscation1:
+        CommandLine|contains:
+            - 'FromBase64String'
+            - 'Convert.FromBase64String'
+        CommandLine|re: '.*[A-Za-z0-9+/]{20,}.*'
+    
+    selection_obfuscation2:
+        CommandLine|contains:
+            - 'char('
+            - 'String.Join'
+            - 'Split('
+    
+    # Persistence indicators
+    selection_persistence1:
+        Image|endswith:
+            - '\schtasks.exe'
+            - '\at.exe'
+        CommandLine|contains:
+            - '/create'
+            - '/sc'
+    
+    selection_persistence2:
+        Image|endswith: '\reg.exe'
+        CommandLine|contains:
+            - 'CurrentVersion\Run'
+            - 'CurrentVersion\RunOnce'
+            - 'Winlogon\Shell'
+    
+    # Network indicators
+    selection_network:
+        Image|endswith:
+            - '\curl.exe'
+            - '\wget.exe'
+            - '\certutil.exe'
+        CommandLine|contains:
+            - 'http'
+            - 'ftp'
+            - '-urlcache'
+    
+    # Legitimate process filters
+    filter_system:
+        User|startswith:
+            - 'NT AUTHORITY\SYSTEM'
+            - 'NT AUTHORITY\LOCAL SERVICE'
+    
+    filter_known_paths:
+        Image|startswith:
+            - 'C:\Windows\System32\'
+            - 'C:\Windows\SysWOW64\'
+        ParentImage|startswith:
+            - 'C:\Windows\System32\'
+            - 'C:\Windows\SysWOW64\'
+    
+    # Complex condition with count patterns
+    condition: (2 of selection_injection* or 1 of selection_obfuscation*) and (1 of selection_persistence* or selection_network) and not (filter_system or filter_known_paths)
+
+fields:
+    - Image
+    - CommandLine
+    - ParentImage
+    - User
+    - ProcessId
+    - ParentProcessId
+
+falsepositives:
+    - Legitimate administrative scripts
+    - Software installation processes
+    - System maintenance tools
+
+level: high

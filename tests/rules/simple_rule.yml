@@ -1,0 +1,17 @@
+title: Simple Login Event Detection
+id: 12345678-1234-1234-1234-123456789abc
+description: Detects successful login events
+author: Test Author
+date: 2024-01-01
+logsource:
+    category: authentication
+    product: windows
+detection:
+    selection:
+        EventID: 4624
+        LogonType: 2
+    condition: selection
+level: low
+tags:
+    - attack.initial_access
+    - attack.t1078
