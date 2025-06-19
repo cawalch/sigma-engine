@@ -14,6 +14,19 @@ pub enum SigmaError {
     StackOverflow,
     IoError(String),
     YamlError(String),
+    // Matcher-related errors
+    UnsupportedMatchType(String),
+    InvalidRegex(String),
+    InvalidIpAddress(String),
+    InvalidCidr(String),
+    ModifierError(String),
+    FieldExtractionError(String),
+    ExecutionTimeout,
+    TooManyOperations(u64),
+    TooManyRegexOperations(u64),
+    BatchSizeMismatch,
+    InvalidPrimitiveIndex(usize),
+    IncompatibleVersion(u32),
 }
 
 impl fmt::Display for SigmaError {
@@ -27,6 +40,24 @@ impl fmt::Display for SigmaError {
             SigmaError::StackOverflow => write!(f, "Stack overflow during execution"),
             SigmaError::IoError(msg) => write!(f, "IO error: {}", msg),
             SigmaError::YamlError(msg) => write!(f, "YAML parsing error: {}", msg),
+            SigmaError::UnsupportedMatchType(match_type) => {
+                write!(f, "Unsupported match type: {}", match_type)
+            }
+            SigmaError::InvalidRegex(pattern) => write!(f, "Invalid regex pattern: {}", pattern),
+            SigmaError::InvalidIpAddress(ip) => write!(f, "Invalid IP address: {}", ip),
+            SigmaError::InvalidCidr(cidr) => write!(f, "Invalid CIDR notation: {}", cidr),
+            SigmaError::ModifierError(msg) => write!(f, "Modifier error: {}", msg),
+            SigmaError::FieldExtractionError(msg) => write!(f, "Field extraction error: {}", msg),
+            SigmaError::ExecutionTimeout => write!(f, "Execution timeout exceeded"),
+            SigmaError::TooManyOperations(count) => write!(f, "Too many operations: {}", count),
+            SigmaError::TooManyRegexOperations(count) => {
+                write!(f, "Too many regex operations: {}", count)
+            }
+            SigmaError::BatchSizeMismatch => write!(f, "Batch size mismatch"),
+            SigmaError::InvalidPrimitiveIndex(idx) => write!(f, "Invalid primitive index: {}", idx),
+            SigmaError::IncompatibleVersion(version) => {
+                write!(f, "Incompatible version: {}", version)
+            }
         }
     }
 }
