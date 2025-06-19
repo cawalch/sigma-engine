@@ -36,18 +36,43 @@
 //! let results = matcher.evaluate(&event)?;
 //! ```
 
+pub mod advanced;
 pub mod builder;
+pub mod cache;
 pub mod compiled;
 pub mod context;
 pub mod defaults;
+pub mod fields;
+pub mod filters;
 pub mod functional;
 pub mod hooks;
+pub mod modifiers;
 pub mod types;
 
-pub use builder::*;
-pub use compiled::*;
-pub use context::*;
-pub use defaults::*;
-pub use functional::*;
-pub use hooks::*;
-pub use types::*;
+// Re-export main types for convenience
+pub use builder::MatcherBuilder;
+pub use cache::{
+    global_regex_cache, init_global_cache, CacheConfig, GlobalRegexCache, PatternComplexity,
+};
+pub use compiled::CompiledPrimitive;
+pub use context::EventContext;
+pub use defaults::{
+    create_base64_decode, create_contains_match, create_endswith_match, create_exact_match,
+    create_regex_match, create_startswith_match, create_utf16_decode, register_defaults,
+};
+pub use fields::{ExtractionStats, OptimizedFieldExtractor};
+pub use filters::{FilterIntegration, FilterStatistics};
+pub use functional::FunctionalMatcher;
+pub use hooks::CompilationContext;
+pub use hooks::{CompilationHookFn, CompilationPhase};
+pub use modifiers::register_comprehensive_modifiers;
+pub use types::{FieldExtractorFn, MatchFn, ModifierFn};
+
+// Re-export advanced match functions with explicit names to avoid conflicts
+#[cfg(feature = "examples")]
+pub use advanced::create_cidr_match as create_advanced_cidr_match;
+
+pub use advanced::{
+    create_fuzzy_match as create_advanced_fuzzy_match,
+    create_range_match as create_advanced_range_match,
+};
