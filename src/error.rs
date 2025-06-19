@@ -19,6 +19,9 @@ pub enum SigmaError {
     InvalidRegex(String),
     InvalidIpAddress(String),
     InvalidCidr(String),
+    InvalidNumber(String),
+    InvalidRange(String),
+    InvalidThreshold(String),
     ModifierError(String),
     FieldExtractionError(String),
     ExecutionTimeout,
@@ -46,6 +49,11 @@ impl fmt::Display for SigmaError {
             SigmaError::InvalidRegex(pattern) => write!(f, "Invalid regex pattern: {}", pattern),
             SigmaError::InvalidIpAddress(ip) => write!(f, "Invalid IP address: {}", ip),
             SigmaError::InvalidCidr(cidr) => write!(f, "Invalid CIDR notation: {}", cidr),
+            SigmaError::InvalidNumber(num) => write!(f, "Invalid number: {}", num),
+            SigmaError::InvalidRange(range) => write!(f, "Invalid range: {}", range),
+            SigmaError::InvalidThreshold(threshold) => {
+                write!(f, "Invalid threshold: {}", threshold)
+            }
             SigmaError::ModifierError(msg) => write!(f, "Modifier error: {}", msg),
             SigmaError::FieldExtractionError(msg) => write!(f, "Field extraction error: {}", msg),
             SigmaError::ExecutionTimeout => write!(f, "Execution timeout exceeded"),

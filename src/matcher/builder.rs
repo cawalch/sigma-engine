@@ -3,7 +3,8 @@
 use crate::error::{Result, SigmaError};
 use crate::ir::Primitive;
 use crate::matcher::{
-    CompiledPrimitive, EventContext, FieldExtractorFn, FunctionalMatcher, MatchFn, ModifierFn,
+    CompilationContext, CompilationHookFn, CompilationPhase, CompiledPrimitive, EventContext,
+    FieldExtractorFn, FunctionalMatcher, MatchFn, ModifierFn,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,6 +34,9 @@ pub struct MatcherBuilder {
 
     /// Optional custom field extractor
     field_extractor: Option<FieldExtractorFn>,
+
+    /// Compilation hooks organized by phase
+    compilation_hooks: HashMap<CompilationPhase, Vec<CompilationHookFn>>,
 }
 
 impl MatcherBuilder {
@@ -51,6 +55,7 @@ impl MatcherBuilder {
             match_registry: HashMap::new(),
             modifier_registry: HashMap::new(),
             field_extractor: None,
+            compilation_hooks: HashMap::new(),
         };
 
         // Register default implementations
@@ -129,7 +134,140 @@ impl MatcherBuilder {
         self
     }
 
-    /// Compile primitives into high-performance matcher.
+    /// Register a compilation hook for a specific phase.
+    ///
+    /// Compilation hooks are called during different phases of primitive compilation
+    /// to allow external libraries to extract patterns for multi-layer filtering.
+    ///
+    /// # Arguments
+    /// * `phase` - The compilation phase when this hook should be called
+    /// * `hook` - Function to call during the specified phase
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// builder.register_compilation_hook(
+    ///     CompilationPhase::PrimitiveDiscovery,
+    ///     |ctx| {
+    ///         if ctx.is_literal_only {
+    ///             for &value in ctx.literal_values {
+    ///                 // Add literal to external filter
+    ///                 println!("Adding literal: {}", value);
+    ///             }
+    ///         }
+    ///         Ok(())
+    ///     }
+    /// );
+    /// ```
+    pub fn register_compilation_hook<F>(&mut self, phase: CompilationPhase, hook: F) -> &mut Self
+    where
+        F: Fn(&CompilationContext) -> Result<()> + Send + Sync + 'static,
+    {
+        self.compilation_hooks
+            .entry(phase)
+            .or_default()
+            .push(Arc::new(hook));
+        self
+    }
+
+    /// Convenience method for AhoCorasick pattern extraction.
+    ///
+    /// Registers a hook that extracts literal values during primitive discovery
+    /// for use with AhoCorasick automaton construction.
+    ///
+    /// # Arguments
+    /// * `extractor` - Function called with each literal value and selectivity hint
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// builder.with_aho_corasick_extraction(|literal, selectivity| {
+    ///     if selectivity < 0.5 {  // Only add selective patterns
+    ///         aho_corasick_patterns.push(literal.to_string());
+    ///     }
+    ///     Ok(())
+    /// });
+    /// ```
+    pub fn with_aho_corasick_extraction<F>(mut self, extractor: F) -> Self
+    where
+        F: Fn(&str, f64) -> Result<()> + Send + Sync + 'static,
+    {
+        let hook = Arc::new(move |ctx: &CompilationContext| {
+            if ctx.is_literal_only {
+                for &value in ctx.literal_values {
+                    extractor(value, ctx.selectivity_hint)?;
+                }
+            }
+            Ok(())
+        });
+
+        self.register_compilation_hook(CompilationPhase::PrimitiveDiscovery, move |ctx| hook(ctx));
+        self
+    }
+
+    /// Convenience method for FST (Finite State Transducer) pattern extraction.
+    ///
+    /// Registers a hook that extracts patterns suitable for FST construction.
+    ///
+    /// # Arguments
+    /// * `extractor` - Function called with field name, pattern, and metadata
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// builder.with_fst_extraction(|field, pattern, is_literal| {
+    ///     if is_literal {
+    ///         fst_builder.add_pattern(field, pattern);
+    ///     }
+    ///     Ok(())
+    /// });
+    /// ```
+    pub fn with_fst_extraction<F>(mut self, extractor: F) -> Self
+    where
+        F: Fn(&str, &str, bool) -> Result<()> + Send + Sync + 'static,
+    {
+        let hook = Arc::new(move |ctx: &CompilationContext| {
+            for &value in ctx.literal_values {
+                extractor(ctx.normalized_field, value, ctx.is_literal_only)?;
+            }
+            Ok(())
+        });
+
+        self.register_compilation_hook(CompilationPhase::PrimitiveDiscovery, move |ctx| hook(ctx));
+        self
+    }
+
+    /// Convenience method for XOR/Cuckoo filter pattern extraction.
+    ///
+    /// Registers a hook that extracts patterns for probabilistic filters.
+    ///
+    /// # Arguments
+    /// * `extractor` - Function called with pattern and selectivity hint
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// builder.with_filter_extraction(|pattern, selectivity| {
+    ///     if selectivity < 0.3 {  // Only very selective patterns
+    ///         xor_filter.add_pattern(pattern);
+    ///     }
+    ///     Ok(())
+    /// });
+    /// ```
+    pub fn with_filter_extraction<F>(mut self, extractor: F) -> Self
+    where
+        F: Fn(&str, f64) -> Result<()> + Send + Sync + 'static,
+    {
+        let hook = Arc::new(move |ctx: &CompilationContext| {
+            if ctx.is_literal_only {
+                for &value in ctx.literal_values {
+                    extractor(value, ctx.selectivity_hint)?;
+                }
+            }
+            Ok(())
+        });
+
+        self.register_compilation_hook(CompilationPhase::PrimitiveDiscovery, move |ctx| hook(ctx));
+        self
+    }
+
+    /// Compile primitives into high-performance matcher with hook execution.
     ///
     /// # Arguments
     /// * `primitives` - Array of primitives to compile
@@ -146,11 +284,41 @@ impl MatcherBuilder {
     /// let matcher = builder.compile(&primitives)?;
     /// ```
     pub fn compile(self, primitives: &[Primitive]) -> Result<FunctionalMatcher> {
+        // Execute pre-compilation hooks
+        if let Some(hooks) = self
+            .compilation_hooks
+            .get(&CompilationPhase::PreCompilation)
+        {
+            for hook in hooks {
+                let summary_ctx = CompilationContext::new_summary(0, Some("Compilation"));
+                hook(&summary_ctx)?;
+            }
+        }
+
         let mut compiled_primitives = Vec::with_capacity(primitives.len());
 
-        for primitive in primitives {
+        for (index, primitive) in primitives.iter().enumerate() {
+            // Execute primitive discovery hooks
+            if let Some(hooks) = self
+                .compilation_hooks
+                .get(&CompilationPhase::PrimitiveDiscovery)
+            {
+                self.execute_primitive_hooks(primitive, index as u32, hooks)?;
+            }
+
             let compiled = self.compile_primitive(primitive)?;
             compiled_primitives.push(compiled);
+        }
+
+        // Execute post-compilation hooks
+        if let Some(hooks) = self
+            .compilation_hooks
+            .get(&CompilationPhase::PostCompilation)
+        {
+            for hook in hooks {
+                let summary_ctx = CompilationContext::new_summary(0, Some("Compilation Complete"));
+                hook(&summary_ctx)?;
+            }
         }
 
         Ok(FunctionalMatcher::new(
@@ -197,6 +365,77 @@ impl MatcherBuilder {
         ))
     }
 
+    /// Execute primitive discovery hooks for a primitive.
+    fn execute_primitive_hooks(
+        &self,
+        primitive: &Primitive,
+        rule_id: u32,
+        hooks: &[CompilationHookFn],
+    ) -> Result<()> {
+        // Extract literal values from the primitive
+        let literal_values: Vec<&str> = primitive.values.iter().map(|v| v.as_ref()).collect();
+
+        // Extract modifier names
+        let modifiers: Vec<&str> = primitive.modifiers.iter().map(|m| m.as_ref()).collect();
+
+        // Calculate selectivity hint based on match type and values
+        let selectivity_hint = self.calculate_selectivity_hint(primitive);
+
+        // Determine if this primitive contains only literal values
+        let is_literal_only = self.is_primitive_literal_only(primitive);
+
+        // Create compilation context with proper lifetimes
+        let ctx = CompilationContext::new(
+            primitive,
+            rule_id,
+            None, // Rule name not available at this level
+            &literal_values,
+            primitive.field.as_ref(), // Raw field
+            primitive.field.as_ref(), // Normalized field (same for now)
+            primitive.match_type.as_ref(),
+            &modifiers,
+            is_literal_only,
+            selectivity_hint,
+        );
+
+        // Execute all hooks for this primitive
+        for hook in hooks {
+            hook(&ctx)?;
+        }
+
+        Ok(())
+    }
+
+    /// Calculate selectivity hint for a primitive.
+    fn calculate_selectivity_hint(&self, primitive: &Primitive) -> f64 {
+        match primitive.match_type.as_ref() {
+            "equals" => 0.1,     // Very selective
+            "contains" => 0.3,   // Moderately selective
+            "startswith" => 0.2, // Selective
+            "endswith" => 0.2,   // Selective
+            "regex" => 0.5,      // Variable selectivity
+            _ => 0.5,            // Default moderate selectivity
+        }
+    }
+
+    /// Check if a primitive contains only literal values.
+    fn is_primitive_literal_only(&self, primitive: &Primitive) -> bool {
+        match primitive.match_type.as_ref() {
+            "equals" | "contains" | "startswith" | "endswith" => {
+                // Check if any values contain wildcards or regex patterns
+                !primitive.values.iter().any(|v| {
+                    let value = v.as_ref();
+                    value.contains('*')
+                        || value.contains('?')
+                        || value.contains('[')
+                        || value.contains('^')
+                })
+            }
+            "regex" => false, // Regex patterns are not literal
+            _ => true,        // Default to literal for unknown types
+        }
+    }
+
     /// Register default match types and modifiers.
     fn register_defaults(&mut self) {
         crate::matcher::defaults::register_defaults(
@@ -223,6 +462,26 @@ impl MatcherBuilder {
     /// Check if a modifier is registered.
     pub fn has_modifier(&self, modifier: &str) -> bool {
         self.modifier_registry.contains_key(modifier)
+    }
+
+    /// Get the number of registered compilation hooks for a phase.
+    pub fn hook_count(&self, phase: CompilationPhase) -> usize {
+        self.compilation_hooks
+            .get(&phase)
+            .map_or(0, |hooks| hooks.len())
+    }
+
+    /// Check if any hooks are registered for a phase.
+    pub fn has_hooks(&self, phase: CompilationPhase) -> bool {
+        self.hook_count(phase) > 0
+    }
+
+    /// Get the total number of registered hooks across all phases.
+    pub fn total_hook_count(&self) -> usize {
+        self.compilation_hooks
+            .values()
+            .map(|hooks| hooks.len())
+            .sum()
     }
 }
 
@@ -310,5 +569,74 @@ mod tests {
         let compiled = builder.compile_primitive(&primitive).unwrap();
         assert_eq!(compiled.field_path_string(), "nested.field");
         assert_eq!(compiled.field_path.len(), 2);
+    }
+
+    #[test]
+    fn test_hook_registration() {
+        use crate::matcher::CompilationPhase;
+
+        let mut builder = MatcherBuilder::new();
+        assert_eq!(builder.hook_count(CompilationPhase::PrimitiveDiscovery), 0);
+        assert!(!builder.has_hooks(CompilationPhase::PrimitiveDiscovery));
+
+        builder.register_compilation_hook(CompilationPhase::PrimitiveDiscovery, |_ctx| Ok(()));
+
+        assert_eq!(builder.hook_count(CompilationPhase::PrimitiveDiscovery), 1);
+        assert!(builder.has_hooks(CompilationPhase::PrimitiveDiscovery));
+        assert_eq!(builder.total_hook_count(), 1);
+    }
+
+    #[test]
+    fn test_convenience_hook_methods() {
+        use std::sync::{Arc, Mutex};
+
+        let extracted_patterns = Arc::new(Mutex::new(Vec::<String>::new()));
+        let patterns_clone = extracted_patterns.clone();
+
+        let builder =
+            MatcherBuilder::new().with_aho_corasick_extraction(move |literal, _selectivity| {
+                patterns_clone.lock().unwrap().push(literal.to_string());
+                Ok(())
+            });
+
+        assert!(builder.has_hooks(CompilationPhase::PrimitiveDiscovery));
+
+        // Test compilation with hook execution
+        let primitives = vec![Primitive::new_static("EventID", "equals", &["4624"], &[])];
+
+        let _matcher = builder.compile(&primitives).unwrap();
+
+        // Check that the hook was called
+        let patterns = extracted_patterns.lock().unwrap();
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0], "4624");
+    }
+
+    #[test]
+    fn test_selectivity_calculation() {
+        let builder = MatcherBuilder::new();
+
+        let equals_primitive = Primitive::new_static("field", "equals", &["value"], &[]);
+        assert_eq!(builder.calculate_selectivity_hint(&equals_primitive), 0.1);
+
+        let contains_primitive = Primitive::new_static("field", "contains", &["value"], &[]);
+        assert_eq!(builder.calculate_selectivity_hint(&contains_primitive), 0.3);
+
+        let regex_primitive = Primitive::new_static("field", "regex", &[".*"], &[]);
+        assert_eq!(builder.calculate_selectivity_hint(&regex_primitive), 0.5);
+    }
+
+    #[test]
+    fn test_literal_only_detection() {
+        let builder = MatcherBuilder::new();
+
+        let literal_primitive = Primitive::new_static("field", "equals", &["literal"], &[]);
+        assert!(builder.is_primitive_literal_only(&literal_primitive));
+
+        let wildcard_primitive = Primitive::new_static("field", "equals", &["test*"], &[]);
+        assert!(!builder.is_primitive_literal_only(&wildcard_primitive));
+
+        let regex_primitive = Primitive::new_static("field", "regex", &[".*"], &[]);
+        assert!(!builder.is_primitive_literal_only(&regex_primitive));
     }
 }

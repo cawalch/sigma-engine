@@ -41,6 +41,7 @@ pub mod compiled;
 pub mod context;
 pub mod defaults;
 pub mod functional;
+pub mod hooks;
 pub mod types;
 
 pub use builder::*;
@@ -48,4 +49,5 @@ pub use compiled::*;
 pub use context::*;
 pub use defaults::*;
 pub use functional::*;
+pub use hooks::*;
 pub use types::*;
