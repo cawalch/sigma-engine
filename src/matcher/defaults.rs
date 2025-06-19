@@ -196,6 +196,223 @@ pub fn create_utf16_decode() -> ModifierFn {
     })
 }
 
+/// Create CIDR match function.
+///
+/// Returns true if the field value (IP address) is contained within any of the provided CIDR ranges.
+///
+/// # Example
+/// ```rust,ignore
+/// let cidr_match = create_cidr_match();
+/// let result = cidr_match("192.168.1.100", &["192.168.1.0/24"], &[])?; // true
+/// ```
+pub fn create_cidr_match() -> MatchFn {
+    Arc::new(|field_value, values, _modifiers| {
+        #[cfg(feature = "examples")]
+        {
+            use std::net::IpAddr;
+
+            let ip: IpAddr = field_value
+                .parse()
+                .map_err(|_| SigmaError::InvalidIpAddress(field_value.to_string()))?;
+
+            for &cidr_str in values {
+                // Parse CIDR notation (e.g., "192.168.1.0/24")
+                if let Some((network_str, prefix_len_str)) = cidr_str.split_once('/') {
+                    let network: IpAddr = network_str
+                        .parse()
+                        .map_err(|_| SigmaError::InvalidCidr(cidr_str.to_string()))?;
+                    let prefix_len: u8 = prefix_len_str
+                        .parse()
+                        .map_err(|_| SigmaError::InvalidCidr(cidr_str.to_string()))?;
+
+                    // Simple CIDR matching - in production would use a proper CIDR library
+                    if ip_in_cidr(ip, network, prefix_len) {
+                        return Ok(true);
+                    }
+                } else {
+                    return Err(SigmaError::InvalidCidr(cidr_str.to_string()));
+                }
+            }
+            Ok(false)
+        }
+        #[cfg(not(feature = "examples"))]
+        {
+            let _ = (field_value, values);
+            Err(SigmaError::UnsupportedMatchType(
+                "cidr requires 'examples' feature".to_string(),
+            ))
+        }
+    })
+}
+
+/// Create range match function.
+///
+/// Returns true if the field value (as a number) falls within any of the provided ranges.
+/// Range format: "min-max" (e.g., "100-200")
+///
+/// # Example
+/// ```rust,ignore
+/// let range_match = create_range_match();
+/// let result = range_match("150", &["100-200"], &[])?; // true
+/// ```
+pub fn create_range_match() -> MatchFn {
+    Arc::new(|field_value, values, _modifiers| {
+        let field_num: f64 = field_value
+            .parse()
+            .map_err(|_| SigmaError::InvalidNumber(field_value.to_string()))?;
+
+        for &range_str in values {
+            if let Some((min_str, max_str)) = range_str.split_once('-') {
+                let min: f64 = min_str
+                    .parse()
+                    .map_err(|_| SigmaError::InvalidRange(range_str.to_string()))?;
+                let max: f64 = max_str
+                    .parse()
+                    .map_err(|_| SigmaError::InvalidRange(range_str.to_string()))?;
+
+                if field_num >= min && field_num <= max {
+                    return Ok(true);
+                }
+            } else {
+                return Err(SigmaError::InvalidRange(range_str.to_string()));
+            }
+        }
+        Ok(false)
+    })
+}
+
+/// Create fuzzy match function.
+///
+/// Returns true if the field value is similar to any of the provided values
+/// based on a configurable similarity threshold.
+///
+/// # Modifiers
+/// * `threshold:X.X` - Set similarity threshold (default: 0.8)
+///
+/// # Example
+/// ```rust,ignore
+/// let fuzzy_match = create_fuzzy_match();
+/// let result = fuzzy_match("hello", &["helo"], &["threshold:0.7"])?; // true
+/// ```
+pub fn create_fuzzy_match() -> MatchFn {
+    Arc::new(|field_value, values, modifiers| {
+        // Extract threshold from modifiers
+        let mut threshold = 0.8; // Default threshold
+        for &modifier in modifiers {
+            if let Some(threshold_str) = modifier.strip_prefix("threshold:") {
+                threshold = threshold_str
+                    .parse()
+                    .map_err(|_| SigmaError::InvalidThreshold(threshold_str.to_string()))?;
+            }
+        }
+
+        for &value in values {
+            let similarity = calculate_similarity(field_value, value);
+            if similarity >= threshold {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
+}
+
+/// Helper function for CIDR matching.
+#[cfg(feature = "examples")]
+fn ip_in_cidr(ip: std::net::IpAddr, network: std::net::IpAddr, prefix_len: u8) -> bool {
+    use std::net::IpAddr;
+
+    match (ip, network) {
+        (IpAddr::V4(ip4), IpAddr::V4(net4)) => {
+            if prefix_len > 32 {
+                return false;
+            }
+            let ip_bits = u32::from(ip4);
+            let net_bits = u32::from(net4);
+            let mask = if prefix_len == 0 {
+                0
+            } else {
+                !((1u32 << (32 - prefix_len)) - 1)
+            };
+            (ip_bits & mask) == (net_bits & mask)
+        }
+        (IpAddr::V6(ip6), IpAddr::V6(net6)) => {
+            if prefix_len > 128 {
+                return false;
+            }
+            let ip_bits = u128::from(ip6);
+            let net_bits = u128::from(net6);
+            let mask = if prefix_len == 0 {
+                0
+            } else {
+                !((1u128 << (128 - prefix_len)) - 1)
+            };
+            (ip_bits & mask) == (net_bits & mask)
+        }
+        _ => false, // Different IP versions
+    }
+}
+
+/// Helper function for calculating string similarity.
+fn calculate_similarity(a: &str, b: &str) -> f64 {
+    if a == b {
+        return 1.0;
+    }
+
+    // Simple Levenshtein distance-based similarity
+    let len_a = a.len();
+    let len_b = b.len();
+
+    if len_a == 0 || len_b == 0 {
+        return 0.0;
+    }
+
+    let max_len = len_a.max(len_b);
+    let distance = levenshtein_distance(a, b);
+
+    1.0 - (distance as f64 / max_len as f64)
+}
+
+/// Simple Levenshtein distance implementation.
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let len_a = a_chars.len();
+    let len_b = b_chars.len();
+
+    if len_a == 0 {
+        return len_b;
+    }
+    if len_b == 0 {
+        return len_a;
+    }
+
+    let mut matrix = vec![vec![0; len_b + 1]; len_a + 1];
+
+    // Initialize first row and column
+    for (i, row) in matrix.iter_mut().enumerate().take(len_a + 1) {
+        row[0] = i;
+    }
+    for j in 0..=len_b {
+        matrix[0][j] = j;
+    }
+
+    // Fill the matrix
+    for i in 1..=len_a {
+        for j in 1..=len_b {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            matrix[i][j] = (matrix[i - 1][j] + 1)
+                .min(matrix[i][j - 1] + 1)
+                .min(matrix[i - 1][j - 1] + cost);
+        }
+    }
+
+    matrix[len_a][len_b]
+}
+
 /// Register all default match types and modifiers with a builder.
 ///
 /// This is used internally by MatcherBuilder::new() to set up default implementations.
@@ -206,6 +423,9 @@ pub fn create_utf16_decode() -> ModifierFn {
 /// * `startswith` - Prefix matching
 /// * `endswith` - Suffix matching
 /// * `regex` - Regular expression matching (requires 'examples' feature)
+/// * `cidr` - CIDR network matching (requires 'examples' feature)
+/// * `range` - Numeric range matching
+/// * `fuzzy` - Fuzzy string matching with configurable threshold
 ///
 /// # Modifiers Registered
 /// * `base64_decode` - Base64 decoding (requires 'examples' feature)
@@ -214,12 +434,17 @@ pub fn register_defaults(
     match_registry: &mut std::collections::HashMap<String, MatchFn>,
     modifier_registry: &mut std::collections::HashMap<String, ModifierFn>,
 ) {
-    // Register match types
+    // Register basic match types
     match_registry.insert("equals".to_string(), create_exact_match());
     match_registry.insert("contains".to_string(), create_contains_match());
     match_registry.insert("startswith".to_string(), create_startswith_match());
     match_registry.insert("endswith".to_string(), create_endswith_match());
     match_registry.insert("regex".to_string(), create_regex_match());
+
+    // Register advanced match types
+    match_registry.insert("cidr".to_string(), create_cidr_match());
+    match_registry.insert("range".to_string(), create_range_match());
+    match_registry.insert("fuzzy".to_string(), create_fuzzy_match());
 
     // Register modifiers
     modifier_registry.insert("base64_decode".to_string(), create_base64_decode());
@@ -329,13 +554,139 @@ mod tests {
 
         register_defaults(&mut match_registry, &mut modifier_registry);
 
+        // Basic match types
         assert!(match_registry.contains_key("equals"));
         assert!(match_registry.contains_key("contains"));
         assert!(match_registry.contains_key("startswith"));
         assert!(match_registry.contains_key("endswith"));
         assert!(match_registry.contains_key("regex"));
 
+        // Advanced match types
+        assert!(match_registry.contains_key("cidr"));
+        assert!(match_registry.contains_key("range"));
+        assert!(match_registry.contains_key("fuzzy"));
+
         assert!(modifier_registry.contains_key("base64_decode"));
         assert!(modifier_registry.contains_key("utf16_decode"));
+    }
+
+    #[test]
+    fn test_range_match() {
+        let range_match = create_range_match();
+
+        // Test valid range
+        let result = range_match("150", &["100-200"], &[]).unwrap();
+        assert!(result);
+
+        // Test boundary values
+        let result = range_match("100", &["100-200"], &[]).unwrap();
+        assert!(result);
+
+        let result = range_match("200", &["100-200"], &[]).unwrap();
+        assert!(result);
+
+        // Test outside range
+        let result = range_match("50", &["100-200"], &[]).unwrap();
+        assert!(!result);
+
+        let result = range_match("250", &["100-200"], &[]).unwrap();
+        assert!(!result);
+
+        // Test multiple ranges
+        let result = range_match("75", &["50-100", "150-200"], &[]).unwrap();
+        assert!(result);
+
+        // Test invalid number
+        let result = range_match("not_a_number", &["100-200"], &[]);
+        assert!(result.is_err());
+
+        // Test invalid range format
+        let result = range_match("150", &["invalid_range"], &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fuzzy_match() {
+        let fuzzy_match = create_fuzzy_match();
+
+        // Test exact match
+        let result = fuzzy_match("hello", &["hello"], &[]).unwrap();
+        assert!(result);
+
+        // Test similar strings with default threshold
+        let result = fuzzy_match("hello", &["helo"], &[]).unwrap();
+        assert!(result); // Should match with default threshold 0.8
+
+        // Test with custom threshold
+        let result = fuzzy_match("hello", &["helo"], &["threshold:0.9"]).unwrap();
+        assert!(!result); // Should not match with high threshold
+
+        let result = fuzzy_match("hello", &["helo"], &["threshold:0.7"]).unwrap();
+        assert!(result); // Should match with lower threshold
+
+        // Test completely different strings
+        let result = fuzzy_match("hello", &["xyz"], &[]).unwrap();
+        assert!(!result);
+
+        // Test invalid threshold
+        let result = fuzzy_match("hello", &["helo"], &["threshold:invalid"]);
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "examples")]
+    #[test]
+    fn test_cidr_match() {
+        let cidr_match = create_cidr_match();
+
+        // Test IPv4 CIDR matching
+        let result = cidr_match("192.168.1.100", &["192.168.1.0/24"], &[]).unwrap();
+        assert!(result);
+
+        let result = cidr_match("192.168.2.100", &["192.168.1.0/24"], &[]).unwrap();
+        assert!(!result);
+
+        // Test boundary cases
+        let result = cidr_match("192.168.1.0", &["192.168.1.0/24"], &[]).unwrap();
+        assert!(result);
+
+        let result = cidr_match("192.168.1.255", &["192.168.1.0/24"], &[]).unwrap();
+        assert!(result);
+
+        // Test multiple CIDR ranges
+        let result = cidr_match("10.0.0.1", &["192.168.1.0/24", "10.0.0.0/8"], &[]).unwrap();
+        assert!(result);
+
+        // Test invalid IP
+        let result = cidr_match("invalid_ip", &["192.168.1.0/24"], &[]);
+        assert!(result.is_err());
+
+        // Test invalid CIDR
+        let result = cidr_match("192.168.1.100", &["invalid_cidr"], &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_similarity_calculation() {
+        assert_eq!(calculate_similarity("hello", "hello"), 1.0);
+        assert_eq!(calculate_similarity("", ""), 1.0);
+        assert_eq!(calculate_similarity("hello", ""), 0.0);
+        assert_eq!(calculate_similarity("", "hello"), 0.0);
+
+        // Test partial similarity
+        let similarity = calculate_similarity("hello", "helo");
+        assert!(similarity > 0.7 && similarity < 1.0);
+
+        let similarity = calculate_similarity("hello", "xyz");
+        assert!(similarity < 0.5);
+    }
+
+    #[test]
+    fn test_levenshtein_distance() {
+        assert_eq!(levenshtein_distance("", ""), 0);
+        assert_eq!(levenshtein_distance("hello", "hello"), 0);
+        assert_eq!(levenshtein_distance("hello", ""), 5);
+        assert_eq!(levenshtein_distance("", "hello"), 5);
+        assert_eq!(levenshtein_distance("hello", "helo"), 1);
+        assert_eq!(levenshtein_distance("kitten", "sitting"), 3);
     }
 }

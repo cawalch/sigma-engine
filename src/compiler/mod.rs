@@ -49,6 +49,7 @@ pub use field_mapping::FieldMapping;
 
 use crate::error::{Result, SigmaError};
 use crate::ir::{BytecodeChunk, CompiledRuleset, Opcode, Primitive, PrimitiveId, RuleId};
+use crate::matcher::{FunctionalMatcher, MatcherBuilder};
 use serde_yaml::Value;
 use std::collections::HashMap;
 
@@ -272,6 +273,81 @@ impl Compiler {
     /// ```
     pub fn primitive_count(&self) -> usize {
         self.primitives.len()
+    }
+
+    /// Create a functional matcher from the discovered primitives.
+    ///
+    /// This method creates a high-performance functional matcher that can be used
+    /// for zero-allocation primitive evaluation. The matcher is built using the
+    /// primitives discovered during rule compilation.
+    ///
+    /// # Returns
+    /// A functional matcher ready for evaluation, or an error if compilation fails.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use sigma_engine::Compiler;
+    ///
+    /// let mut compiler = Compiler::new();
+    /// // Compile some rules to discover primitives
+    /// let rule_yaml = r#"
+    /// title: Test Rule
+    /// detection:
+    ///     selection:
+    ///         EventID: 4624
+    ///     condition: selection
+    /// "#;
+    /// compiler.compile_rule(rule_yaml)?;
+    ///
+    /// // Create functional matcher from discovered primitives
+    /// let matcher = compiler.create_functional_matcher()?;
+    /// # Ok::<(), sigma_engine::SigmaError>(())
+    /// ```
+    pub fn create_functional_matcher(&self) -> Result<FunctionalMatcher> {
+        let builder = MatcherBuilder::new();
+        builder.compile(&self.primitives)
+    }
+
+    /// Create a functional matcher with custom hooks.
+    ///
+    /// This method allows you to register compilation hooks before creating the matcher.
+    /// Hooks can be used to extract patterns for external filtering libraries.
+    ///
+    /// # Arguments
+    /// * `builder_fn` - Function that configures the MatcherBuilder with hooks
+    ///
+    /// # Returns
+    /// A functional matcher with hooks executed during compilation.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use sigma_engine::{Compiler, CompilationPhase};
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// let mut compiler = Compiler::new();
+    /// // ... compile rules ...
+    ///
+    /// let patterns = Arc::new(Mutex::new(Vec::new()));
+    /// let patterns_clone = patterns.clone();
+    ///
+    /// let matcher = compiler.create_functional_matcher_with_hooks(|builder| {
+    ///     builder.with_aho_corasick_extraction(move |literal, _selectivity| {
+    ///         patterns_clone.lock().unwrap().push(literal.to_string());
+    ///         Ok(())
+    ///     })
+    /// })?;
+    /// # Ok::<(), sigma_engine::SigmaError>(())
+    /// ```
+    pub fn create_functional_matcher_with_hooks<F>(
+        &self,
+        builder_fn: F,
+    ) -> Result<FunctionalMatcher>
+    where
+        F: FnOnce(MatcherBuilder) -> MatcherBuilder,
+    {
+        let builder = MatcherBuilder::new();
+        let configured_builder = builder_fn(builder);
+        configured_builder.compile(&self.primitives)
     }
 
     fn extract_rule_id_from_yaml(&self, yaml_doc: &Value) -> RuleId {
@@ -626,6 +702,68 @@ mod tests {
 
         let (_, _, modifiers) = compiler.parse_field_with_modifiers("Data|base64offset");
         assert_eq!(modifiers, vec!["base64_offset_decode"]);
+    }
+
+    #[test]
+    fn test_create_functional_matcher() {
+        let mut compiler = Compiler::new();
+
+        // Compile a simple rule to discover primitives
+        let rule_yaml = r#"
+        title: Test Rule
+        detection:
+            selection:
+                EventID: 4624
+                LogonType: 2
+            condition: selection
+        "#;
+
+        let _bytecode = compiler.compile_rule(rule_yaml).unwrap();
+        assert!(compiler.primitive_count() > 0);
+
+        // Create functional matcher from discovered primitives
+        let matcher = compiler.create_functional_matcher().unwrap();
+        assert_eq!(matcher.primitive_count(), compiler.primitive_count());
+    }
+
+    #[test]
+    fn test_create_functional_matcher_with_hooks() {
+        use std::sync::{Arc, Mutex};
+
+        let mut compiler = Compiler::new();
+
+        // Compile a rule with literal values
+        let rule_yaml = r#"
+        title: Test Rule
+        detection:
+            selection:
+                EventID: 4624
+                ProcessName: "notepad.exe"
+            condition: selection
+        "#;
+
+        let _bytecode = compiler.compile_rule(rule_yaml).unwrap();
+
+        // Create matcher with hooks
+        let extracted_patterns = Arc::new(Mutex::new(Vec::<String>::new()));
+        let patterns_clone = extracted_patterns.clone();
+
+        let matcher = compiler
+            .create_functional_matcher_with_hooks(|builder| {
+                builder.with_aho_corasick_extraction(move |literal, _selectivity| {
+                    patterns_clone.lock().unwrap().push(literal.to_string());
+                    Ok(())
+                })
+            })
+            .unwrap();
+
+        assert_eq!(matcher.primitive_count(), compiler.primitive_count());
+
+        // Check that hooks were executed
+        let patterns = extracted_patterns.lock().unwrap();
+        assert!(!patterns.is_empty());
+        assert!(patterns.contains(&"4624".to_string()));
+        assert!(patterns.contains(&"notepad.exe".to_string()));
     }
 
     #[test]
