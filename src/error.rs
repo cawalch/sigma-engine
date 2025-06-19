@@ -30,6 +30,10 @@ pub enum SigmaError {
     BatchSizeMismatch,
     InvalidPrimitiveIndex(usize),
     IncompatibleVersion(u32),
+    // Advanced matcher errors
+    InvalidNumericValue(String),
+    InvalidFieldPath(String),
+    DangerousRegexPattern(String),
 }
 
 impl fmt::Display for SigmaError {
@@ -65,6 +69,11 @@ impl fmt::Display for SigmaError {
             SigmaError::InvalidPrimitiveIndex(idx) => write!(f, "Invalid primitive index: {}", idx),
             SigmaError::IncompatibleVersion(version) => {
                 write!(f, "Incompatible version: {}", version)
+            }
+            SigmaError::InvalidNumericValue(value) => write!(f, "Invalid numeric value: {}", value),
+            SigmaError::InvalidFieldPath(path) => write!(f, "Invalid field path: {}", path),
+            SigmaError::DangerousRegexPattern(pattern) => {
+                write!(f, "Dangerous regex pattern detected: {}", pattern)
             }
         }
     }
@@ -190,5 +199,59 @@ mod tests {
             SigmaError::CompilationError(msg) => assert_eq!(msg, "test error"),
             _ => panic!("Expected CompilationError"),
         }
+    }
+
+    #[test]
+    fn test_error_display_comprehensive() {
+        let err = SigmaError::CompilationError("test compilation error".to_string());
+        assert_eq!(
+            format!("{}", err),
+            "Compilation error: test compilation error"
+        );
+
+        let err = SigmaError::ExecutionError("test execution error".to_string());
+        assert_eq!(format!("{}", err), "Execution error: test execution error");
+
+        let err = SigmaError::InvalidBytecode("test invalid bytecode".to_string());
+        assert_eq!(
+            format!("{}", err),
+            "Invalid bytecode: test invalid bytecode"
+        );
+
+        let err = SigmaError::InvalidPrimitiveId(42);
+        assert_eq!(format!("{}", err), "Invalid primitive ID: 42");
+
+        let err = SigmaError::StackOverflow;
+        assert_eq!(format!("{}", err), "Stack overflow during execution");
+
+        let err = SigmaError::StackUnderflow;
+        assert_eq!(format!("{}", err), "Stack underflow during execution");
+    }
+
+    #[test]
+    fn test_error_source() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let sigma_err = SigmaError::from(io_err);
+        assert!(sigma_err.source().is_none()); // IoError converts to string, no source
+
+        let err = SigmaError::StackOverflow;
+        assert!(err.source().is_none());
+
+        let err = SigmaError::CompilationError("test".to_string());
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn test_error_from_conversions() {
+        // Test From<std::io::Error>
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+        let sigma_err: SigmaError = io_err.into();
+        assert!(matches!(sigma_err, SigmaError::IoError(_)));
+
+        // Test manual conversion for serde_yaml::Error
+        let yaml_str = "invalid: yaml: content: [";
+        let yaml_err = serde_yaml::from_str::<serde_yaml::Value>(yaml_str).unwrap_err();
+        let sigma_err = SigmaError::YamlError(yaml_err.to_string());
+        assert!(matches!(sigma_err, SigmaError::YamlError(_)));
     }
 }

@@ -34,6 +34,6 @@ pub use error::{Result, SigmaError};
 pub use ir::{BytecodeChunk, CompiledRuleset, Opcode, Primitive, PrimitiveId, RuleId};
 pub use matcher::{
     CompiledPrimitive, EventContext, FieldExtractorFn, FunctionalMatcher, MatchFn, MatcherBuilder,
-    MatcherStatistics, ModifierFn,
+    ModifierFn,
 };
 pub use vm::{DefaultVm, Vm};

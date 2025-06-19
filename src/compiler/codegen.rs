@@ -753,7 +753,7 @@ mod tests {
         // k = 0
         let combinations = generate_combinations(3, 0);
         assert_eq!(combinations.len(), 1);
-        assert_eq!(combinations[0], vec![]);
+        assert_eq!(combinations[0], vec![] as Vec<usize>);
 
         // k > n
         let combinations = generate_combinations(2, 5);
@@ -767,7 +767,7 @@ mod tests {
         // n = 0
         let combinations = generate_combinations(0, 0);
         assert_eq!(combinations.len(), 1);
-        assert_eq!(combinations[0], vec![]);
+        assert_eq!(combinations[0], vec![] as Vec<usize>);
     }
 
     #[test]
@@ -885,7 +885,7 @@ mod tests {
         // Test edge case with zero selections
         let combinations = generate_combinations(0, 0);
         assert_eq!(combinations.len(), 1);
-        assert_eq!(combinations[0], vec![]);
+        assert_eq!(combinations[0], vec![] as Vec<usize>);
 
         let combinations = generate_combinations(0, 1);
         assert_eq!(combinations.len(), 0);

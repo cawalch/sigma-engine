@@ -442,9 +442,20 @@ pub fn register_defaults(
     match_registry.insert("regex".to_string(), create_regex_match());
 
     // Register advanced match types
-    match_registry.insert("cidr".to_string(), create_cidr_match());
-    match_registry.insert("range".to_string(), create_range_match());
-    match_registry.insert("fuzzy".to_string(), create_fuzzy_match());
+    #[cfg(feature = "examples")]
+    match_registry.insert(
+        "cidr".to_string(),
+        crate::matcher::advanced::create_cidr_match(),
+    );
+
+    match_registry.insert(
+        "range".to_string(),
+        crate::matcher::advanced::create_range_match(),
+    );
+    match_registry.insert(
+        "fuzzy".to_string(),
+        crate::matcher::advanced::create_fuzzy_match(),
+    );
 
     // Register modifiers
     modifier_registry.insert("base64_decode".to_string(), create_base64_decode());
@@ -562,6 +573,7 @@ mod tests {
         assert!(match_registry.contains_key("regex"));
 
         // Advanced match types
+        #[cfg(feature = "examples")]
         assert!(match_registry.contains_key("cidr"));
         assert!(match_registry.contains_key("range"));
         assert!(match_registry.contains_key("fuzzy"));
