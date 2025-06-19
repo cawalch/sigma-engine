@@ -1,6 +1,7 @@
 # Rust build artifacts
 /target/
 
+
 /benchmark_results/
 
 # Temporary docs for now
@@ -62,6 +63,7 @@ book/
 
 # Development and planning files
 *_PLAN.md
+API*.md
 TODO.md
 NOTES.md
 .notes/

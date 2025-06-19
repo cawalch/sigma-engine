@@ -26,9 +26,14 @@
 pub mod compiler;
 pub mod error;
 pub mod ir;
+pub mod matcher;
 pub mod vm;
 
 pub use compiler::{Compiler, FieldMapping};
 pub use error::{Result, SigmaError};
 pub use ir::{BytecodeChunk, CompiledRuleset, Opcode, Primitive, PrimitiveId, RuleId};
+pub use matcher::{
+    CompiledPrimitive, EventContext, FieldExtractorFn, FunctionalMatcher, MatchFn, MatcherBuilder,
+    MatcherStatistics, ModifierFn,
+};
 pub use vm::{DefaultVm, Vm};
