@@ -13,7 +13,7 @@
 //!
 //! - [`EventContext`] - Field value caching for repeated access
 //! - [`CompiledPrimitive`] - Pre-compiled primitive with Arc-based sharing
-//! - [`FunctionalMatcher`] - Zero-allocation evaluation engine
+//! - Zero-allocation evaluation engine
 //! - [`MatcherBuilder`] - Registry pattern for function registration
 //!
 //! ## Multi-Layer Integration
@@ -42,12 +42,12 @@ pub mod cache;
 pub mod compiled;
 pub mod context;
 pub mod defaults;
-pub mod fields;
 pub mod filters;
-pub mod functional;
 pub mod hooks;
 pub mod modifiers;
 pub mod types;
+
+// Some deprecated modules removed - keeping hooks for multi-layer integration
 
 // Re-export main types for convenience
 pub use builder::MatcherBuilder;
@@ -59,20 +59,23 @@ pub use context::EventContext;
 pub use defaults::{
     create_base64_decode, create_contains_match, create_endswith_match, create_exact_match,
     create_regex_match, create_startswith_match, create_utf16_decode, register_defaults,
+    register_defaults_with_comprehensive_modifiers,
 };
-pub use fields::{ExtractionStats, OptimizedFieldExtractor};
+
 pub use filters::{FilterIntegration, FilterStatistics};
-pub use functional::FunctionalMatcher;
-pub use hooks::CompilationContext;
-pub use hooks::{CompilationHookFn, CompilationPhase};
+
+pub use hooks::{CompilationContext, CompilationHookFn, CompilationPhase};
+
 pub use modifiers::register_comprehensive_modifiers;
+
 pub use types::{FieldExtractorFn, MatchFn, ModifierFn};
 
 // Re-export advanced match functions with explicit names to avoid conflicts
-#[cfg(feature = "examples")]
 pub use advanced::create_cidr_match as create_advanced_cidr_match;
 
 pub use advanced::{
     create_fuzzy_match as create_advanced_fuzzy_match,
     create_range_match as create_advanced_range_match,
 };
+
+// Enterprise features removed - they were not part of core functionality

@@ -3,13 +3,10 @@
 //! This module provides high-performance regex compilation caching to avoid
 //! recompiling the same patterns across multiple primitives and evaluations.
 
-#[cfg(feature = "examples")]
 use crate::error::SigmaError;
+use regex::Regex;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-
-#[cfg(feature = "examples")]
-use regex::Regex;
 
 /// Global regex cache for compiled patterns.
 ///
@@ -57,13 +54,7 @@ struct CacheStorage {
 #[derive(Debug, Clone)]
 struct CachedRegex {
     /// The compiled regex pattern
-    #[cfg(feature = "examples")]
     regex: Arc<Regex>,
-
-    /// Pattern without regex for non-examples builds
-    #[cfg(not(feature = "examples"))]
-    #[allow(dead_code)]
-    pattern: String,
 
     /// Number of times this pattern has been accessed
     #[allow(dead_code)]
@@ -172,7 +163,6 @@ impl GlobalRegexCache {
     /// - Compilation of new patterns
     /// - Complexity analysis and safety checks
     /// - LRU tracking and eviction
-    #[cfg(feature = "examples")]
     pub fn get_regex(&self, pattern: &str) -> Result<Arc<Regex>, SigmaError> {
         // Try cache lookup first
         {
@@ -216,7 +206,6 @@ impl GlobalRegexCache {
     }
 
     /// Compile and cache a new regex pattern.
-    #[cfg(feature = "examples")]
     fn compile_and_cache(&self, pattern: &str) -> Result<Arc<Regex>, SigmaError> {
         // Analyze pattern complexity
         let complexity = if self.config.analyze_complexity {
@@ -329,7 +318,6 @@ impl GlobalRegexCache {
     ///
     /// This is useful for warming the cache with known patterns before
     /// high-performance evaluation begins.
-    #[cfg(feature = "examples")]
     pub fn precompile_patterns(&self, patterns: &[&str]) -> Result<(), SigmaError> {
         for &pattern in patterns {
             self.get_regex(pattern)?;
@@ -412,21 +400,18 @@ mod tests {
         let cache = GlobalRegexCache::new();
 
         // Test cache miss and compilation
-        #[cfg(feature = "examples")]
-        {
-            let regex1 = cache.get_regex("test").unwrap();
-            let stats = cache.get_stats();
-            assert_eq!(stats.misses, 1);
-            assert_eq!(stats.compilations, 1);
+        let regex1 = cache.get_regex("test").unwrap();
+        let stats = cache.get_stats();
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.compilations, 1);
 
-            // Test cache hit
-            let regex2 = cache.get_regex("test").unwrap();
-            let stats = cache.get_stats();
-            assert_eq!(stats.hits, 1);
+        // Test cache hit
+        let regex2 = cache.get_regex("test").unwrap();
+        let stats = cache.get_stats();
+        assert_eq!(stats.hits, 1);
 
-            // Verify same instance
-            assert!(Arc::ptr_eq(&regex1, &regex2));
-        }
+        // Verify same instance
+        assert!(Arc::ptr_eq(&regex1, &regex2));
     }
 
     #[test]
@@ -453,18 +438,15 @@ mod tests {
         };
         let cache = GlobalRegexCache::with_config(config);
 
-        #[cfg(feature = "examples")]
-        {
-            // Fill cache beyond capacity
-            let _ = cache.get_regex("pattern1");
-            let _ = cache.get_regex("pattern2");
-            let _ = cache.get_regex("pattern3");
-            let _ = cache.get_regex("pattern4"); // Should trigger eviction
+        // Fill cache beyond capacity
+        let _ = cache.get_regex("pattern1");
+        let _ = cache.get_regex("pattern2");
+        let _ = cache.get_regex("pattern3");
+        let _ = cache.get_regex("pattern4"); // Should trigger eviction
 
-            let stats = cache.get_stats();
-            assert!(stats.evictions > 0);
-            assert!(cache.size() <= 3);
-        }
+        let stats = cache.get_stats();
+        assert!(stats.evictions > 0);
+        assert!(cache.size() <= 3);
     }
 
     #[test]
@@ -476,20 +458,17 @@ mod tests {
         };
         let cache = GlobalRegexCache::with_config(config);
 
-        #[cfg(feature = "examples")]
-        {
-            // Access pattern multiple times to make it hot
-            let _ = cache.get_regex("hot_pattern");
-            let _ = cache.get_regex("hot_pattern");
-            let _ = cache.get_regex("hot_pattern"); // Now hot
+        // Access pattern multiple times to make it hot
+        let _ = cache.get_regex("hot_pattern");
+        let _ = cache.get_regex("hot_pattern");
+        let _ = cache.get_regex("hot_pattern"); // Now hot
 
-            // Add more patterns to trigger eviction
-            let _ = cache.get_regex("cold1");
-            let _ = cache.get_regex("cold2"); // Should evict cold1, not hot_pattern
+        // Add more patterns to trigger eviction
+        let _ = cache.get_regex("cold1");
+        let _ = cache.get_regex("cold2"); // Should evict cold1, not hot_pattern
 
-            // Hot pattern should still be accessible
-            let result = cache.get_regex("hot_pattern");
-            assert!(result.is_ok());
-        }
+        // Hot pattern should still be accessible
+        let result = cache.get_regex("hot_pattern");
+        assert!(result.is_ok());
     }
 }

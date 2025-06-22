@@ -6,8 +6,8 @@ rust-version = "1.72.0"
 authors = ["SIGMA Engine Contributors"]
 description = "High-performance SIGMA detection engine for security rules"
 documentation = "https://docs.rs/sigma-engine"
-homepage = "https://github.com/yourusername/sigma-engine"
-repository = "https://github.com/yourusername/sigma-engine"
+homepage = "https://github.com/cawalch/sigma-engine"
+repository = "https://github.com/cawalch/sigma-engine"
 license = "MIT OR Apache-2.0"
 keywords = ["sigma", "detection", "security", "engine", "rules"]
 categories = ["parsing", "algorithms", "development-tools"]
@@ -19,48 +19,43 @@ exclude = [
     "docs/",
     ".github/",
     "*.svg",
-    "*.png",
-    "RUST_NORMALIZATION_PLAN.md",
-    "LLM.md",
-    "HYBRID_VM.md"
+    "*.png"
 ]
 
 [lib]
 name = "sigma_engine"
 
 [dependencies]
-# Core runtime dependencies (kept minimal for performance)
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
+serde_json = "1.0"
 anyhow = "1.0"
 thiserror = "1.0"
 
-# Optional dependencies for examples and demos
-serde_json = { version = "1.0", optional = true }
-aho-corasick = { version = "1.1", optional = true }
-regex = { version = "1.10", optional = true }
-base64 = { version = "0.22", optional = true }
+# Core dependencies for performance
+string_cache = "0.8"
+
+# Core dependencies for matching capabilities
+regex = "1.10"
+base64 = "0.22"
+
+# Core dependencies for parallel processing
+rayon = "1.8"
+
+# Optional dependencies
+simd-json = { version = "0.13", optional = true }
 
 [features]
 default = []
-# Enable examples and demo functionality
-examples = ["dep:serde_json", "dep:aho-corasick", "dep:regex", "dep:base64"]
-# Enable performance metrics and monitoring
+
 metrics = []
-# Enable all optional features
-full = ["examples", "metrics"]
+profiling = ["dep:simd-json"]
+full = ["metrics", "profiling"]
 
 [dev-dependencies]
-# Development and testing dependencies
 criterion = { version = "0.5", features = ["html_reports"] }
-serde_json = "1.0"  # Always available for tests
-aho-corasick = "1.1"  # Always available for tests
-regex = "1.10"  # Always available for tests
-base64 = "0.22"  # Always available for tests
+tempfile = "3.8"
 
-[[bench]]
-name = "vm_execution"
-harness = false
 
 [[bench]]
 name = "end_to_end"
@@ -70,25 +65,9 @@ harness = false
 name = "rule_scaling"
 harness = false
 
-[[example]]
-name = "basic_usage"
-path = "examples/basic_usage.rs"
-required-features = ["examples"]
-
-[[example]]
-name = "advanced_usage"
-path = "examples/advanced_usage.rs"
-required-features = ["examples"]
-
-[[example]]
-name = "engine_demo"
-path = "examples/engine_demo.rs"
-required-features = ["examples"]
-
-[[example]]
-name = "hybrid_execution_demo"
-path = "examples/hybrid_execution_demo.rs"
-required-features = ["examples"]
+[[bench]]
+name = "dag_execution"
+harness = false
 
 [profile.bench]
 debug = true

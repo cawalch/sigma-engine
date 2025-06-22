@@ -254,4 +254,269 @@ mod tests {
         let sigma_err = SigmaError::YamlError(yaml_err.to_string());
         assert!(matches!(sigma_err, SigmaError::YamlError(_)));
     }
+
+    #[test]
+    fn test_all_error_variants_display() {
+        // Test all error variants for display formatting
+        let errors = vec![
+            SigmaError::UnsupportedMatchType("custom".to_string()),
+            SigmaError::InvalidRegex("invalid[".to_string()),
+            SigmaError::InvalidIpAddress("256.256.256.256".to_string()),
+            SigmaError::InvalidCidr("192.168.1.0/33".to_string()),
+            SigmaError::InvalidNumber("not_a_number".to_string()),
+            SigmaError::InvalidRange("invalid_range".to_string()),
+            SigmaError::InvalidThreshold("invalid_threshold".to_string()),
+            SigmaError::ModifierError("modifier failed".to_string()),
+            SigmaError::FieldExtractionError("field not found".to_string()),
+            SigmaError::ExecutionTimeout,
+            SigmaError::TooManyOperations(1000),
+            SigmaError::TooManyRegexOperations(500),
+            SigmaError::BatchSizeMismatch,
+            SigmaError::InvalidPrimitiveIndex(99),
+            SigmaError::IncompatibleVersion(2),
+            SigmaError::InvalidNumericValue("NaN".to_string()),
+            SigmaError::InvalidFieldPath("invalid.path".to_string()),
+            SigmaError::DangerousRegexPattern("(a+)+".to_string()),
+        ];
+
+        for error in errors {
+            let display_str = error.to_string();
+            assert!(!display_str.is_empty());
+
+            // Verify specific error messages
+            match &error {
+                SigmaError::UnsupportedMatchType(match_type) => {
+                    assert!(display_str.contains("Unsupported match type"));
+                    assert!(display_str.contains(match_type));
+                }
+                SigmaError::InvalidRegex(pattern) => {
+                    assert!(display_str.contains("Invalid regex pattern"));
+                    assert!(display_str.contains(pattern));
+                }
+                SigmaError::InvalidIpAddress(ip) => {
+                    assert!(display_str.contains("Invalid IP address"));
+                    assert!(display_str.contains(ip));
+                }
+                SigmaError::InvalidCidr(cidr) => {
+                    assert!(display_str.contains("Invalid CIDR notation"));
+                    assert!(display_str.contains(cidr));
+                }
+                SigmaError::InvalidNumber(num) => {
+                    assert!(display_str.contains("Invalid number"));
+                    assert!(display_str.contains(num));
+                }
+                SigmaError::InvalidRange(range) => {
+                    assert!(display_str.contains("Invalid range"));
+                    assert!(display_str.contains(range));
+                }
+                SigmaError::InvalidThreshold(threshold) => {
+                    assert!(display_str.contains("Invalid threshold"));
+                    assert!(display_str.contains(threshold));
+                }
+                SigmaError::ModifierError(msg) => {
+                    assert!(display_str.contains("Modifier error"));
+                    assert!(display_str.contains(msg));
+                }
+                SigmaError::FieldExtractionError(msg) => {
+                    assert!(display_str.contains("Field extraction error"));
+                    assert!(display_str.contains(msg));
+                }
+                SigmaError::ExecutionTimeout => {
+                    assert!(display_str.contains("Execution timeout exceeded"));
+                }
+                SigmaError::TooManyOperations(count) => {
+                    assert!(display_str.contains("Too many operations"));
+                    assert!(display_str.contains(&count.to_string()));
+                }
+                SigmaError::TooManyRegexOperations(count) => {
+                    assert!(display_str.contains("Too many regex operations"));
+                    assert!(display_str.contains(&count.to_string()));
+                }
+                SigmaError::BatchSizeMismatch => {
+                    assert!(display_str.contains("Batch size mismatch"));
+                }
+                SigmaError::InvalidPrimitiveIndex(idx) => {
+                    assert!(display_str.contains("Invalid primitive index"));
+                    assert!(display_str.contains(&idx.to_string()));
+                }
+                SigmaError::IncompatibleVersion(version) => {
+                    assert!(display_str.contains("Incompatible version"));
+                    assert!(display_str.contains(&version.to_string()));
+                }
+                SigmaError::InvalidNumericValue(value) => {
+                    assert!(display_str.contains("Invalid numeric value"));
+                    assert!(display_str.contains(value));
+                }
+                SigmaError::InvalidFieldPath(path) => {
+                    assert!(display_str.contains("Invalid field path"));
+                    assert!(display_str.contains(path));
+                }
+                SigmaError::DangerousRegexPattern(pattern) => {
+                    assert!(display_str.contains("Dangerous regex pattern detected"));
+                    assert!(display_str.contains(pattern));
+                }
+                _ => {} // Already tested above
+            }
+        }
+    }
+
+    #[test]
+    fn test_error_equality_comprehensive() {
+        // Test equality for all error variants
+        assert_eq!(
+            SigmaError::UnsupportedMatchType("test".to_string()),
+            SigmaError::UnsupportedMatchType("test".to_string())
+        );
+        assert_ne!(
+            SigmaError::UnsupportedMatchType("test1".to_string()),
+            SigmaError::UnsupportedMatchType("test2".to_string())
+        );
+
+        assert_eq!(SigmaError::ExecutionTimeout, SigmaError::ExecutionTimeout);
+        assert_eq!(SigmaError::BatchSizeMismatch, SigmaError::BatchSizeMismatch);
+        assert_eq!(SigmaError::StackOverflow, SigmaError::StackOverflow);
+        assert_eq!(SigmaError::StackUnderflow, SigmaError::StackUnderflow);
+
+        assert_eq!(
+            SigmaError::TooManyOperations(100),
+            SigmaError::TooManyOperations(100)
+        );
+        assert_ne!(
+            SigmaError::TooManyOperations(100),
+            SigmaError::TooManyOperations(200)
+        );
+
+        assert_eq!(
+            SigmaError::InvalidPrimitiveId(42),
+            SigmaError::InvalidPrimitiveId(42)
+        );
+        assert_ne!(
+            SigmaError::InvalidPrimitiveId(42),
+            SigmaError::InvalidPrimitiveId(43)
+        );
+
+        // Test inequality between different variants
+        assert_ne!(
+            SigmaError::CompilationError("test".to_string()),
+            SigmaError::ExecutionError("test".to_string())
+        );
+        assert_ne!(SigmaError::StackOverflow, SigmaError::StackUnderflow);
+        assert_ne!(SigmaError::ExecutionTimeout, SigmaError::BatchSizeMismatch);
+    }
+
+    #[test]
+    fn test_error_clone_comprehensive() {
+        let errors = vec![
+            SigmaError::CompilationError("test".to_string()),
+            SigmaError::ExecutionError("test".to_string()),
+            SigmaError::InvalidBytecode("test".to_string()),
+            SigmaError::InvalidPrimitiveId(42),
+            SigmaError::StackUnderflow,
+            SigmaError::StackOverflow,
+            SigmaError::IoError("test".to_string()),
+            SigmaError::YamlError("test".to_string()),
+            SigmaError::UnsupportedMatchType("test".to_string()),
+            SigmaError::InvalidRegex("test".to_string()),
+            SigmaError::InvalidIpAddress("test".to_string()),
+            SigmaError::InvalidCidr("test".to_string()),
+            SigmaError::InvalidNumber("test".to_string()),
+            SigmaError::InvalidRange("test".to_string()),
+            SigmaError::InvalidThreshold("test".to_string()),
+            SigmaError::ModifierError("test".to_string()),
+            SigmaError::FieldExtractionError("test".to_string()),
+            SigmaError::ExecutionTimeout,
+            SigmaError::TooManyOperations(100),
+            SigmaError::TooManyRegexOperations(50),
+            SigmaError::BatchSizeMismatch,
+            SigmaError::InvalidPrimitiveIndex(10),
+            SigmaError::IncompatibleVersion(1),
+            SigmaError::InvalidNumericValue("test".to_string()),
+            SigmaError::InvalidFieldPath("test".to_string()),
+            SigmaError::DangerousRegexPattern("test".to_string()),
+        ];
+
+        for error in errors {
+            let cloned = error.clone();
+            assert_eq!(error, cloned);
+        }
+    }
+
+    #[test]
+    fn test_error_debug_comprehensive() {
+        let errors = vec![
+            (
+                SigmaError::CompilationError("test".to_string()),
+                "CompilationError",
+            ),
+            (
+                SigmaError::ExecutionError("test".to_string()),
+                "ExecutionError",
+            ),
+            (
+                SigmaError::InvalidBytecode("test".to_string()),
+                "InvalidBytecode",
+            ),
+            (SigmaError::InvalidPrimitiveId(42), "InvalidPrimitiveId"),
+            (SigmaError::StackUnderflow, "StackUnderflow"),
+            (SigmaError::StackOverflow, "StackOverflow"),
+            (SigmaError::IoError("test".to_string()), "IoError"),
+            (SigmaError::YamlError("test".to_string()), "YamlError"),
+            (
+                SigmaError::UnsupportedMatchType("test".to_string()),
+                "UnsupportedMatchType",
+            ),
+            (SigmaError::InvalidRegex("test".to_string()), "InvalidRegex"),
+            (
+                SigmaError::InvalidIpAddress("test".to_string()),
+                "InvalidIpAddress",
+            ),
+            (SigmaError::InvalidCidr("test".to_string()), "InvalidCidr"),
+            (
+                SigmaError::InvalidNumber("test".to_string()),
+                "InvalidNumber",
+            ),
+            (SigmaError::InvalidRange("test".to_string()), "InvalidRange"),
+            (
+                SigmaError::InvalidThreshold("test".to_string()),
+                "InvalidThreshold",
+            ),
+            (
+                SigmaError::ModifierError("test".to_string()),
+                "ModifierError",
+            ),
+            (
+                SigmaError::FieldExtractionError("test".to_string()),
+                "FieldExtractionError",
+            ),
+            (SigmaError::ExecutionTimeout, "ExecutionTimeout"),
+            (SigmaError::TooManyOperations(100), "TooManyOperations"),
+            (
+                SigmaError::TooManyRegexOperations(50),
+                "TooManyRegexOperations",
+            ),
+            (SigmaError::BatchSizeMismatch, "BatchSizeMismatch"),
+            (
+                SigmaError::InvalidPrimitiveIndex(10),
+                "InvalidPrimitiveIndex",
+            ),
+            (SigmaError::IncompatibleVersion(1), "IncompatibleVersion"),
+            (
+                SigmaError::InvalidNumericValue("test".to_string()),
+                "InvalidNumericValue",
+            ),
+            (
+                SigmaError::InvalidFieldPath("test".to_string()),
+                "InvalidFieldPath",
+            ),
+            (
+                SigmaError::DangerousRegexPattern("test".to_string()),
+                "DangerousRegexPattern",
+            ),
+        ];
+
+        for (error, expected_variant) in errors {
+            let debug_str = format!("{:?}", error);
+            assert!(debug_str.contains(expected_variant));
+        }
+    }
 }

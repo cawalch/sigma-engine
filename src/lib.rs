@@ -1,39 +1,129 @@
 //! # SIGMA Detection Engine
 //!
-//! A high-performance Rust library for compiling and executing SIGMA detection rules
-//! using a stack-based bytecode virtual machine.
+//! A high-performance Rust library for compiling and executing [SIGMA detection rules](https://github.com/SigmaHQ/sigma)
+//! using a DAG-based execution engine with shared computation optimization.
 //!
-//! ## Architecture
 //!
-//! This crate is divided into two main components:
-//! - **Compiler** (offline): Parses SIGMA YAML rules and compiles them to bytecode
-//! - **Virtual Machine** (online): Executes bytecode at high speed with minimal allocation
+//! ## Quick Start
 //!
-//! ## Usage
+//! ### Basic Usage
 //!
 //! ```rust,ignore
-//! use sigma_engine::{Compiler, Vm};
+//! use sigma_engine::{Compiler, SigmaEngine};
 //!
-//! // Offline compilation
+//! // Compile SIGMA rules
 //! let mut compiler = Compiler::new();
-//! let bytecode = compiler.compile_rule(&sigma_rule)?;
+//! let rule_yaml = r#"
+//! title: Windows Login Event
+//! logsource:
+//!     category: authentication
+//! detection:
+//!     selection:
+//!         EventID: 4624
+//!         LogonType: 2
+//!     condition: selection
+//! "#;
 //!
-//! // Online execution
-//! let mut vm = Vm::new();
-//! let result = vm.execute(&bytecode, &primitive_results);
+//! let ruleset = compiler.compile_ruleset(&[rule_yaml])?;
+//!
+//! // Create engine
+//! let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+//!
+//! // Evaluate events
+//! let event = serde_json::json!({
+//!     "EventID": "4624",
+//!     "LogonType": 2
+//! });
+//!
+//! let result = engine.evaluate(&event)?;
+//! println!("Matched rules: {:?}", result.matched_rules);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! ### Batch Processing
+//!
+//! ```rust,ignore
+//! use sigma_engine::{Compiler, SigmaEngine};
+//!
+//! let mut compiler = Compiler::new();
+//! let ruleset = compiler.compile_ruleset(&rules)?;
+//! let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+//!
+//! // Process multiple events efficiently
+//! let events = vec![
+//!     serde_json::json!({"EventID": "4624", "LogonType": 2}),
+//!     serde_json::json!({"EventID": "4625", "LogonType": 3}),
+//!     serde_json::json!({"EventID": "4624", "LogonType": 2}),
+//! ];
+//!
+//! let results = engine.evaluate_batch(&events)?;
+//! let total_matches: usize = results.iter().map(|r| r.matched_rules.len()).sum();
+//! println!("Processed {} events, {} total matches", events.len(), total_matches);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! ### Field Mapping
+//!
+//! ```rust,ignore
+//! use sigma_engine::{Compiler, FieldMapping, SigmaEngine};
+//!
+//! // Map SIGMA field names to your event schema
+//! let mut field_mapping = FieldMapping::with_taxonomy("custom_edr".to_string());
+//! field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
+//! field_mapping.add_mapping("ProcessCommandLine".to_string(), "CommandLine".to_string());
+//!
+//! let mut compiler = Compiler::with_field_mapping(field_mapping);
+//! let ruleset = compiler.compile_ruleset(&rules)?;
+//! let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+//!
+//! // Events use your custom field names
+//! let event = serde_json::json!({
+//!     "EventID": 1,
+//!     "Image": "C:\\Windows\\System32\\powershell.exe",
+//!     "CommandLine": "powershell.exe -Command Get-Process"
+//! });
+//!
+//! let result = engine.evaluate(&event)?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 pub mod compiler;
+pub mod config;
+pub mod engine;
 pub mod error;
 pub mod ir;
 pub mod matcher;
-pub mod vm;
 
+// Primary DAG execution engine
+pub mod dag;
+
+// Streaming architecture for Kafka integration patterns
+pub mod streaming;
+
+#[cfg(feature = "profiling")]
+pub mod profiling;
+
+// Primary engine interface
+pub use engine::{EngineResult, SigmaEngine};
+
+// Compiler and configuration
 pub use compiler::{Compiler, FieldMapping};
-pub use error::{Result, SigmaError};
-pub use ir::{BytecodeChunk, CompiledRuleset, Opcode, Primitive, PrimitiveId, RuleId};
-pub use matcher::{
-    CompiledPrimitive, EventContext, FieldExtractorFn, FunctionalMatcher, MatchFn, MatcherBuilder,
-    ModifierFn,
+pub use config::{
+    BatchConfig, EngineConfig, ExecutionStrategy, MemoryConfig, PerformanceConfig, SecurityConfig,
 };
-pub use vm::{DefaultVm, Vm};
+
+// Core types and errors
+pub use error::{Result, SigmaError};
+pub use ir::{CompiledRuleset, Primitive, PrimitiveId, RuleId};
+
+// Matcher system
+pub use matcher::{
+    CompiledPrimitive, EventContext, FieldExtractorFn, MatchFn, MatcherBuilder, ModifierFn,
+};
+
+// DAG execution engine (for advanced use cases)
+pub use dag::engine::{DagEngineBuilder, DagEngineConfig, DagExecutionResult};
+pub use dag::{
+    CompiledDag, DagBuilder, DagEngine, DagEvaluationResult, DagEvaluator, DagNode, DagOptimizer,
+    DagStatistics, LogicalOp, NodeId, NodeType, ParallelConfig,
+};

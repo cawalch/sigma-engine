@@ -1,17 +1,101 @@
 //! Event context with field value caching for performance.
 
 use crate::error::SigmaError;
-use serde_yaml::Value;
+use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-/// Event context with field value caching for performance.
+/// Event context with field value caching for high-performance field access.
 ///
-/// Provides cached field access to avoid repeated JSON parsing during
-/// primitive evaluation. The cache uses interior mutability to allow
-/// caching even when the context is borrowed immutably.
+/// `EventContext` provides an optimized interface for extracting field values from
+/// JSON events with intelligent caching to avoid repeated parsing. It's designed
+/// to minimize overhead during rule evaluation while supporting complex nested
+/// field access patterns.
 ///
-/// # Example
+///
+/// # Supported Field Patterns
+///
+/// ## Simple Fields
+/// ```rust,ignore
+/// let event = json!({"EventID": "4624", "LogonType": 2});
+/// let context = EventContext::new(&event);
+///
+/// let event_id = context.get_field("EventID")?; // Some("4624")
+/// let logon_type = context.get_field("LogonType")?; // Some("2")
+/// ```
+///
+/// ## Nested Fields (Dot Notation)
+/// ```rust,ignore
+/// let event = json!({
+///     "Event": {
+///         "System": {
+///             "EventID": "4624",
+///             "TimeCreated": "2023-01-01T00:00:00Z"
+///         }
+///     }
+/// });
+/// let context = EventContext::new(&event);
+///
+/// let event_id = context.get_field("Event.System.EventID")?; // Some("4624")
+/// let time = context.get_field("Event.System.TimeCreated")?; // Some("2023-01-01T00:00:00Z")
+/// ```
+///
+/// ## Array Access
+/// ```rust,ignore
+/// let event = json!({
+///     "Users": [
+///         {"Name": "Alice", "ID": 1001},
+///         {"Name": "Bob", "ID": 1002}
+///     ]
+/// });
+/// let context = EventContext::new(&event);
+///
+/// let first_user = context.get_field("Users.0.Name")?; // Some("Alice")
+/// let second_id = context.get_field("Users.1.ID")?; // Some("1002")
+/// ```
+///
+/// # Caching Behavior
+///
+/// The context maintains an internal cache of extracted field values:
+/// - **First access**: Parses JSON path and extracts value
+/// - **Subsequent access**: Returns cached value immediately
+/// - **Cache key**: Full field path string (e.g., "Event.System.EventID")
+/// - **Cache lifetime**: Lives for the duration of the context
+///
+/// # Type Conversion
+///
+/// All field values are converted to strings for consistent matching:
+/// - **Strings**: Returned as-is (without quotes)
+/// - **Numbers**: Converted to string representation
+/// - **Booleans**: Converted to "true" or "false"
+/// - **Arrays/Objects**: Converted to JSON string representation
+/// - **Null**: Returns `None`
+///
+/// # Error Handling
+///
+/// Field access can fail in several scenarios:
+/// - **Invalid path**: Malformed dot notation
+/// - **Missing field**: Field doesn't exist in event
+/// - **Type errors**: Attempting to index non-array/object
+/// - **JSON errors**: Malformed JSON structure
+///
+/// # Memory Usage
+///
+/// The context is designed for efficient memory usage:
+/// - **Borrowed data**: Holds only a reference to the original event
+/// - **Selective caching**: Only caches accessed fields
+/// - **String interning**: Can be combined with string interning for further optimization
+/// - **Bounded growth**: Cache size is limited by the number of unique field accesses
+///
+/// # Thread Safety
+///
+/// `EventContext` is **not** thread-safe due to interior mutability in the cache.
+/// Each thread should create its own context instance. However, the underlying
+/// event data can be shared across threads safely.
+///
+/// # Examples
+///
+/// ## Basic Usage
 /// ```rust,ignore
 /// use sigma_engine::matcher::EventContext;
 /// use serde_json::json;
@@ -21,11 +105,40 @@ use std::collections::HashMap;
 ///
 /// // First access parses and caches
 /// let event_id = context.get_field("EventID")?;
-/// assert_eq!(event_id, Some("4624"));
+/// assert_eq!(event_id, Some("4624".to_string()));
 ///
-/// // Second access uses cache
+/// // Second access uses cache (faster)
 /// let event_id_cached = context.get_field("EventID")?;
-/// assert_eq!(event_id_cached, Some("4624"));
+/// assert_eq!(event_id_cached, Some("4624".to_string()));
+/// ```
+///
+/// ## Nested Field Access
+/// ```rust,ignore
+/// let event = json!({
+///     "Process": {
+///         "Name": "powershell.exe",
+///         "CommandLine": "powershell.exe -Command Get-Process"
+///     }
+/// });
+/// let context = EventContext::new(&event);
+///
+/// let process_name = context.get_field("Process.Name")?;
+/// assert_eq!(process_name, Some("powershell.exe".to_string()));
+///
+/// let command_line = context.get_field("Process.CommandLine")?;
+/// assert_eq!(command_line, Some("powershell.exe -Command Get-Process".to_string()));
+/// ```
+///
+/// ## Handling Missing Fields
+/// ```rust,ignore
+/// let event = json!({"EventID": "4624"});
+/// let context = EventContext::new(&event);
+///
+/// let existing = context.get_field("EventID")?;
+/// assert_eq!(existing, Some("4624".to_string()));
+///
+/// let missing = context.get_field("NonExistent")?;
+/// assert_eq!(missing, None);
 /// ```
 pub struct EventContext<'a> {
     /// Reference to the original event
@@ -166,12 +279,14 @@ mod tests {
     use super::*;
 
     fn create_test_event() -> Value {
-        serde_yaml::from_str(
+        serde_json::from_str(
             r#"
-EventID: "4624"
-LogonType: 2
-Success: true
-Empty: null
+{
+  "EventID": "4624",
+  "LogonType": 2,
+  "Success": true,
+  "Empty": null
+}
 "#,
         )
         .unwrap()
@@ -200,13 +315,17 @@ Empty: null
 
     #[test]
     fn test_nested_field_extraction() {
-        let event = serde_yaml::from_str(
+        let event = serde_json::from_str(
             r#"
-nested:
-  field: "value"
-  number: 42
-  deep:
-    value: "deep_value"
+{
+  "nested": {
+    "field": "value",
+    "number": 42,
+    "deep": {
+      "value": "deep_value"
+    }
+  }
+}
 "#,
         )
         .unwrap();
@@ -231,7 +350,7 @@ nested:
 
     #[test]
     fn test_field_caching() {
-        let event = serde_yaml::from_str(r#"EventID: "4624""#).unwrap();
+        let event = serde_json::from_str(r#"{"EventID": "4624"}"#).unwrap();
         let context = EventContext::new(&event);
 
         // First access should cache
@@ -248,7 +367,7 @@ nested:
 
     #[test]
     fn test_cache_clear() {
-        let event = serde_yaml::from_str(r#"EventID: "4624""#).unwrap();
+        let event = serde_json::from_str(r#"{"EventID": "4624"}"#).unwrap();
         let context = EventContext::new(&event);
 
         context.get_field("EventID").unwrap();
@@ -260,11 +379,14 @@ nested:
 
     #[test]
     fn test_unsupported_field_type() {
-        let event = serde_yaml::from_str(
+        let event = serde_json::from_str(
             r#"
-array_field: [1, 2, 3]
-object_field:
-  key: "value"
+{
+  "array_field": [1, 2, 3],
+  "object_field": {
+    "key": "value"
+  }
+}
 "#,
         )
         .unwrap();

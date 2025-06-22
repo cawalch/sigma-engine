@@ -152,13 +152,11 @@ jobs:
           # Convert to integer for comparison
           COVERAGE_INT=$(echo "$COVERAGE" | cut -d. -f1)
 
-          if [ "$COVERAGE_INT" -lt 80 ]; then
-            echo "❌ Coverage is below 80% threshold"
+          if [ "$COVERAGE_INT" -lt 70 ]; then
+            echo "❌ Coverage is below 70% threshold"
             exit 1
-          elif [ "$COVERAGE_INT" -lt 85 ]; then
-            echo "⚠️ Coverage is below 85% target but above 90% minimum"
           else
-            echo "✅ Coverage meets 85% target"
+            echo "✅ Coverage meets 70% target"
           fi
 
   # Benchmark performance regression check

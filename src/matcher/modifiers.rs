@@ -8,7 +8,6 @@ use crate::matcher::types::ModifierFn;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg(feature = "examples")]
 use base64::{engine::general_purpose, Engine as _};
 
 /// Register all comprehensive modifiers with the provided registry.
@@ -36,14 +35,10 @@ pub fn register_comprehensive_modifiers(modifier_registry: &mut HashMap<String, 
 /// Register encoding and decoding modifiers.
 fn register_encoding_modifiers(modifier_registry: &mut HashMap<String, ModifierFn>) {
     // Base64 decoding
-    #[cfg(feature = "examples")]
     modifier_registry.insert("base64_decode".to_string(), create_base64_decode());
-
-    #[cfg(feature = "examples")]
     modifier_registry.insert("base64".to_string(), create_base64_decode());
 
     // Base64 offset decoding (for malware analysis)
-    #[cfg(feature = "examples")]
     modifier_registry.insert(
         "base64offset_decode".to_string(),
         create_base64_offset_decode(),
@@ -130,7 +125,6 @@ fn register_advanced_modifiers(modifier_registry: &mut HashMap<String, ModifierF
 
 // Encoding/Decoding implementations
 
-#[cfg(feature = "examples")]
 fn create_base64_decode() -> ModifierFn {
     Arc::new(|input| {
         general_purpose::STANDARD
@@ -144,7 +138,6 @@ fn create_base64_decode() -> ModifierFn {
     })
 }
 
-#[cfg(feature = "examples")]
 fn create_base64_offset_decode() -> ModifierFn {
     Arc::new(|input| {
         // Try different offsets for malware analysis
@@ -586,5 +579,65 @@ mod tests {
 
         // Just verify the registry has some modifiers
         assert!(!registry.is_empty());
+    }
+
+    #[test]
+    fn test_comprehensive_modifiers_integration() {
+        let mut registry = HashMap::new();
+        register_comprehensive_modifiers(&mut registry);
+
+        // Verify all modifier categories are registered
+        assert!(registry.contains_key("base64_decode"));
+        assert!(registry.contains_key("url_decode"));
+        assert!(registry.contains_key("html_decode"));
+        assert!(registry.contains_key("hex_encode"));
+        assert!(registry.contains_key("hex_decode"));
+        assert!(registry.contains_key("uppercase"));
+        assert!(registry.contains_key("lowercase"));
+        assert!(registry.contains_key("trim"));
+        assert!(registry.contains_key("normalize_path"));
+        assert!(registry.contains_key("to_int"));
+        assert!(registry.contains_key("md5"));
+        assert!(registry.contains_key("sha256"));
+
+        // Test that we have a substantial number of modifiers
+        assert!(registry.len() > 20);
+    }
+
+    #[test]
+    fn test_base64_decode_functionality() {
+        let base64_decode = create_base64_decode();
+
+        // Test valid base64
+        let result = base64_decode("aGVsbG8=");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello");
+
+        // Test invalid base64
+        let result = base64_decode("invalid_base64!");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hex_encode_decode_roundtrip() {
+        let hex_encode = create_hex_encode();
+        let hex_decode = create_hex_decode();
+
+        let original = "hello world";
+        let encoded = hex_encode(original).unwrap();
+        let decoded = hex_decode(&encoded).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_string_transformation_modifiers() {
+        let uppercase = create_uppercase();
+        let lowercase = create_lowercase();
+        let trim = create_trim();
+
+        assert_eq!(uppercase("hello").unwrap(), "HELLO");
+        assert_eq!(lowercase("WORLD").unwrap(), "world");
+        assert_eq!(trim("  spaced  ").unwrap(), "spaced");
     }
 }

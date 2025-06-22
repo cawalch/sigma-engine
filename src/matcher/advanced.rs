@@ -11,10 +11,7 @@ use crate::error::SigmaError;
 use crate::matcher::types::MatchFn;
 use std::sync::Arc;
 
-#[cfg(feature = "examples")]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-#[cfg(feature = "examples")]
 use std::str::FromStr;
 
 /// Create a CIDR network matching function.
@@ -32,7 +29,6 @@ use std::str::FromStr;
 /// - `10.0.0.0/8`
 /// - `2001:db8::/32`
 /// - `::1/128`
-#[cfg(feature = "examples")]
 pub fn create_cidr_match() -> MatchFn {
     Arc::new(|field_value, values, _modifiers| {
         let ip = parse_ip_address(field_value)?;
@@ -110,12 +106,10 @@ pub fn create_fuzzy_match() -> MatchFn {
 
 // Helper functions for CIDR matching
 
-#[cfg(feature = "examples")]
 fn parse_ip_address(ip_str: &str) -> Result<IpAddr, SigmaError> {
     IpAddr::from_str(ip_str).map_err(|_| SigmaError::InvalidIpAddress(ip_str.to_string()))
 }
 
-#[cfg(feature = "examples")]
 fn is_ip_in_cidr(ip: &IpAddr, cidr_str: &str) -> Result<bool, SigmaError> {
     let (network_ip, prefix_len) = parse_cidr(cidr_str)?;
 
@@ -126,7 +120,6 @@ fn is_ip_in_cidr(ip: &IpAddr, cidr_str: &str) -> Result<bool, SigmaError> {
     }
 }
 
-#[cfg(feature = "examples")]
 fn parse_cidr(cidr_str: &str) -> Result<(IpAddr, u8), SigmaError> {
     let parts: Vec<&str> = cidr_str.split('/').collect();
     if parts.len() != 2 {
@@ -154,7 +147,6 @@ fn parse_cidr(cidr_str: &str) -> Result<(IpAddr, u8), SigmaError> {
     Ok((network_ip, prefix_len))
 }
 
-#[cfg(feature = "examples")]
 fn is_ipv4_in_network(ip: Ipv4Addr, network: Ipv4Addr, prefix_len: u8) -> bool {
     if prefix_len == 0 {
         return true; // 0.0.0.0/0 matches everything
@@ -167,7 +159,6 @@ fn is_ipv4_in_network(ip: Ipv4Addr, network: Ipv4Addr, prefix_len: u8) -> bool {
     (ip_bits & mask) == (network_bits & mask)
 }
 
-#[cfg(feature = "examples")]
 fn is_ipv6_in_network(ip: Ipv6Addr, network: Ipv6Addr, prefix_len: u8) -> bool {
     if prefix_len == 0 {
         return true; // ::/0 matches everything
@@ -401,7 +392,6 @@ mod tests {
         assert!(!fuzzy_fn("hello", &["world"], &["fuzzy:0.9"]).unwrap());
     }
 
-    #[cfg(feature = "examples")]
     #[test]
     fn test_cidr_matching() {
         let cidr_fn = create_cidr_match();
@@ -454,7 +444,6 @@ mod tests {
         assert!(fuzzy_fn("Hello", &["hello"], &["fuzzy:0.8"]).unwrap());
     }
 
-    #[cfg(feature = "examples")]
     #[test]
     fn test_cidr_matching_comprehensive() {
         let cidr_fn = create_cidr_match();
