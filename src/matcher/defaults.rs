@@ -119,7 +119,7 @@ pub fn create_endswith_match() -> MatchFn {
 /// Create default regex match function.
 ///
 /// Returns true if the field value matches any of the provided regex patterns.
-/// Uses a simple compilation approach - in production, this would use a global cache.
+/// Uses the global regex cache for optimal performance with repeated patterns.
 ///
 /// # Example
 /// ```rust,ignore
@@ -128,26 +128,15 @@ pub fn create_endswith_match() -> MatchFn {
 /// ```
 pub fn create_regex_match() -> MatchFn {
     Arc::new(|field_value, values, _modifiers| {
-        #[cfg(feature = "examples")]
-        {
-            for &pattern in values {
-                let regex = regex::Regex::new(pattern)
-                    .map_err(|e| SigmaError::InvalidRegex(e.to_string()))?;
-                if regex.is_match(field_value) {
-                    return Ok(true);
-                }
+        use crate::matcher::cache::global_regex_cache;
+
+        for &pattern in values {
+            let regex = global_regex_cache().get_regex(pattern)?;
+            if regex.is_match(field_value) {
+                return Ok(true);
             }
-            Ok(false)
         }
-        #[cfg(not(feature = "examples"))]
-        {
-            // Without regex feature, always return false
-            // This allows the code to compile without optional dependencies
-            let _ = (field_value, values);
-            Err(SigmaError::UnsupportedMatchType(
-                "regex requires 'examples' feature".to_string(),
-            ))
-        }
+        Ok(false)
     })
 }
 
@@ -162,21 +151,11 @@ pub fn create_regex_match() -> MatchFn {
 /// ```
 pub fn create_base64_decode() -> ModifierFn {
     Arc::new(|input| {
-        #[cfg(feature = "examples")]
-        {
-            use base64::{engine::general_purpose, Engine as _};
-            general_purpose::STANDARD
-                .decode(input)
-                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
-                .map_err(|e| SigmaError::ModifierError(format!("Base64 decode failed: {}", e)))
-        }
-        #[cfg(not(feature = "examples"))]
-        {
-            let _ = input;
-            Err(SigmaError::ModifierError(
-                "base64_decode requires 'examples' feature".to_string(),
-            ))
-        }
+        use base64::{engine::general_purpose, Engine as _};
+        general_purpose::STANDARD
+            .decode(input)
+            .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+            .map_err(|e| SigmaError::ModifierError(format!("Base64 decode failed: {}", e)))
     })
 }
 
@@ -205,46 +184,6 @@ pub fn create_utf16_decode() -> ModifierFn {
 /// let cidr_match = create_cidr_match();
 /// let result = cidr_match("192.168.1.100", &["192.168.1.0/24"], &[])?; // true
 /// ```
-pub fn create_cidr_match() -> MatchFn {
-    Arc::new(|field_value, values, _modifiers| {
-        #[cfg(feature = "examples")]
-        {
-            use std::net::IpAddr;
-
-            let ip: IpAddr = field_value
-                .parse()
-                .map_err(|_| SigmaError::InvalidIpAddress(field_value.to_string()))?;
-
-            for &cidr_str in values {
-                // Parse CIDR notation (e.g., "192.168.1.0/24")
-                if let Some((network_str, prefix_len_str)) = cidr_str.split_once('/') {
-                    let network: IpAddr = network_str
-                        .parse()
-                        .map_err(|_| SigmaError::InvalidCidr(cidr_str.to_string()))?;
-                    let prefix_len: u8 = prefix_len_str
-                        .parse()
-                        .map_err(|_| SigmaError::InvalidCidr(cidr_str.to_string()))?;
-
-                    // Simple CIDR matching - in production would use a proper CIDR library
-                    if ip_in_cidr(ip, network, prefix_len) {
-                        return Ok(true);
-                    }
-                } else {
-                    return Err(SigmaError::InvalidCidr(cidr_str.to_string()));
-                }
-            }
-            Ok(false)
-        }
-        #[cfg(not(feature = "examples"))]
-        {
-            let _ = (field_value, values);
-            Err(SigmaError::UnsupportedMatchType(
-                "cidr requires 'examples' feature".to_string(),
-            ))
-        }
-    })
-}
-
 /// Create range match function.
 ///
 /// Returns true if the field value (as a number) falls within any of the provided ranges.
@@ -314,42 +253,6 @@ pub fn create_fuzzy_match() -> MatchFn {
         }
         Ok(false)
     })
-}
-
-/// Helper function for CIDR matching.
-#[cfg(feature = "examples")]
-fn ip_in_cidr(ip: std::net::IpAddr, network: std::net::IpAddr, prefix_len: u8) -> bool {
-    use std::net::IpAddr;
-
-    match (ip, network) {
-        (IpAddr::V4(ip4), IpAddr::V4(net4)) => {
-            if prefix_len > 32 {
-                return false;
-            }
-            let ip_bits = u32::from(ip4);
-            let net_bits = u32::from(net4);
-            let mask = if prefix_len == 0 {
-                0
-            } else {
-                !((1u32 << (32 - prefix_len)) - 1)
-            };
-            (ip_bits & mask) == (net_bits & mask)
-        }
-        (IpAddr::V6(ip6), IpAddr::V6(net6)) => {
-            if prefix_len > 128 {
-                return false;
-            }
-            let ip_bits = u128::from(ip6);
-            let net_bits = u128::from(net6);
-            let mask = if prefix_len == 0 {
-                0
-            } else {
-                !((1u128 << (128 - prefix_len)) - 1)
-            };
-            (ip_bits & mask) == (net_bits & mask)
-        }
-        _ => false, // Different IP versions
-    }
 }
 
 /// Helper function for calculating string similarity.
@@ -422,13 +325,13 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
 /// * `contains` - Substring matching
 /// * `startswith` - Prefix matching
 /// * `endswith` - Suffix matching
-/// * `regex` - Regular expression matching (requires 'examples' feature)
-/// * `cidr` - CIDR network matching (requires 'examples' feature)
+/// * `regex` - Regular expression matching
+/// * `cidr` - CIDR network matching
 /// * `range` - Numeric range matching
 /// * `fuzzy` - Fuzzy string matching with configurable threshold
 ///
 /// # Modifiers Registered
-/// * `base64_decode` - Base64 decoding (requires 'examples' feature)
+/// * `base64_decode` - Base64 decoding
 /// * `utf16_decode` - UTF-16 decoding
 pub fn register_defaults(
     match_registry: &mut std::collections::HashMap<String, MatchFn>,
@@ -442,7 +345,6 @@ pub fn register_defaults(
     match_registry.insert("regex".to_string(), create_regex_match());
 
     // Register advanced match types
-    #[cfg(feature = "examples")]
     match_registry.insert(
         "cidr".to_string(),
         crate::matcher::advanced::create_cidr_match(),
@@ -457,9 +359,31 @@ pub fn register_defaults(
         crate::matcher::advanced::create_fuzzy_match(),
     );
 
-    // Register modifiers
+    // Register basic modifiers
     modifier_registry.insert("base64_decode".to_string(), create_base64_decode());
     modifier_registry.insert("utf16_decode".to_string(), create_utf16_decode());
+}
+
+/// Register all default match types and comprehensive modifiers with a builder.
+///
+/// This extends the basic defaults with comprehensive SIGMA modifier support.
+/// Use this when you need full SIGMA specification compliance.
+///
+/// # Additional Modifiers Registered
+/// * All encoding/decoding modifiers (base64, URL, HTML, UTF-16 variants)
+/// * String transformation modifiers (case, trim, path normalization)
+/// * Data format modifiers (hex, JSON, XML, CSV)
+/// * Numeric modifiers (int/float conversion, timestamps)
+/// * Advanced modifiers (hashing, compression, regex extraction)
+pub fn register_defaults_with_comprehensive_modifiers(
+    match_registry: &mut std::collections::HashMap<String, MatchFn>,
+    modifier_registry: &mut std::collections::HashMap<String, ModifierFn>,
+) {
+    // Register all basic defaults first
+    register_defaults(match_registry, modifier_registry);
+
+    // Add comprehensive modifiers
+    crate::matcher::modifiers::register_comprehensive_modifiers(modifier_registry);
 }
 
 #[cfg(test)]
@@ -538,7 +462,6 @@ mod tests {
         assert!(!result);
     }
 
-    #[cfg(feature = "examples")]
     #[test]
     fn test_regex_match() {
         let regex_match = create_regex_match();
@@ -573,7 +496,6 @@ mod tests {
         assert!(match_registry.contains_key("regex"));
 
         // Advanced match types
-        #[cfg(feature = "examples")]
         assert!(match_registry.contains_key("cidr"));
         assert!(match_registry.contains_key("range"));
         assert!(match_registry.contains_key("fuzzy"));
@@ -645,10 +567,9 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(feature = "examples")]
     #[test]
     fn test_cidr_match() {
-        let cidr_match = create_cidr_match();
+        let cidr_match = crate::matcher::advanced::create_cidr_match();
 
         // Test IPv4 CIDR matching
         let result = cidr_match("192.168.1.100", &["192.168.1.0/24"], &[]).unwrap();

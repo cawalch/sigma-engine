@@ -1,30 +1,19 @@
-//! Intermediate Representation (IR) for SIGMA bytecode.
+//! Intermediate Representation (IR) for SIGMA rules.
 //!
 //! This module defines the core data structures used throughout the compilation
-//! and execution pipeline.
+//! and execution pipeline, including primitives and compiled rulesets.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 
 pub type PrimitiveId = u32;
 pub type RuleId = u32;
 
-/// Bytecode opcodes for the stack-based virtual machine.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Opcode {
-    PushMatch(PrimitiveId),
-    And,
-    Or,
-    Not,
-    ReturnMatch(RuleId),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Primitive {
-    pub field: Cow<'static, str>,
-    pub match_type: Cow<'static, str>,
-    pub values: Vec<Cow<'static, str>>,
-    pub modifiers: Vec<Cow<'static, str>>,
+    pub field: String,
+    pub match_type: String,
+    pub values: Vec<String>,
+    pub modifiers: Vec<String>,
 }
 
 impl Primitive {
@@ -35,10 +24,10 @@ impl Primitive {
         modifiers: Vec<String>,
     ) -> Self {
         Self {
-            field: Cow::Owned(field),
-            match_type: Cow::Owned(match_type),
-            values: values.into_iter().map(Cow::Owned).collect(),
-            modifiers: modifiers.into_iter().map(Cow::Owned).collect(),
+            field,
+            match_type,
+            values,
+            modifiers,
         }
     }
 
@@ -49,189 +38,26 @@ impl Primitive {
         modifiers: &[&'static str],
     ) -> Self {
         Self {
-            field: Cow::Borrowed(field),
-            match_type: Cow::Borrowed(match_type),
-            values: values.iter().map(|&s| Cow::Borrowed(s)).collect(),
-            modifiers: modifiers.iter().map(|&s| Cow::Borrowed(s)).collect(),
+            field: field.to_string(),
+            match_type: match_type.to_string(),
+            values: values.iter().map(|&s| s.to_string()).collect(),
+            modifiers: modifiers.iter().map(|&s| s.to_string()).collect(),
         }
     }
-}
 
-/// Complexity classification for bytecode chunks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChunkComplexity {
-    Simple,
-    Medium,
-    Complex,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BytecodeChunk {
-    pub rule_id: RuleId,
-    pub opcodes: Vec<Opcode>,
-    pub rule_name: Option<String>,
-    pub max_stack_depth: usize,
-    pub max_primitive_id: Option<PrimitiveId>,
-    pub is_validated: bool,
-    pub complexity: ChunkComplexity,
-}
-
-impl BytecodeChunk {
-    pub fn new(rule_id: RuleId, opcodes: Vec<Opcode>) -> Self {
-        let max_stack_depth = Self::calculate_max_stack_depth(&opcodes);
-        let max_primitive_id = Self::find_max_primitive_id(&opcodes);
-        let is_validated = Self::validate_bytecode_structure(&opcodes);
-        let complexity = Self::analyze_complexity(&opcodes, max_stack_depth);
-
+    /// Create a new primitive from string slices.
+    pub fn from_strs(field: &str, match_type: &str, values: &[&str], modifiers: &[&str]) -> Self {
         Self {
-            rule_id,
-            opcodes,
-            rule_name: None,
-            max_stack_depth,
-            max_primitive_id,
-            is_validated,
-            complexity,
-        }
-    }
-
-    pub fn with_name(rule_id: RuleId, opcodes: Vec<Opcode>, rule_name: String) -> Self {
-        let max_stack_depth = Self::calculate_max_stack_depth(&opcodes);
-        let max_primitive_id = Self::find_max_primitive_id(&opcodes);
-        let is_validated = Self::validate_bytecode_structure(&opcodes);
-        let complexity = Self::analyze_complexity(&opcodes, max_stack_depth);
-
-        Self {
-            rule_id,
-            opcodes,
-            rule_name: Some(rule_name),
-            max_stack_depth,
-            max_primitive_id,
-            is_validated,
-            complexity,
-        }
-    }
-
-    fn calculate_max_stack_depth(opcodes: &[Opcode]) -> usize {
-        let mut current_depth: usize = 0;
-        let mut max_depth: usize = 0;
-
-        for opcode in opcodes {
-            match opcode {
-                Opcode::PushMatch(_) => {
-                    current_depth += 1;
-                    max_depth = max_depth.max(current_depth);
-                }
-                Opcode::And | Opcode::Or => {
-                    current_depth = current_depth.saturating_sub(1);
-                }
-                Opcode::Not => {}
-                Opcode::ReturnMatch(_) => {
-                    current_depth = current_depth.saturating_sub(1);
-                }
-            }
-        }
-
-        max_depth
-    }
-
-    fn find_max_primitive_id(opcodes: &[Opcode]) -> Option<PrimitiveId> {
-        opcodes
-            .iter()
-            .filter_map(|opcode| match opcode {
-                Opcode::PushMatch(id) => Some(*id),
-                _ => None,
-            })
-            .max()
-    }
-
-    fn validate_bytecode_structure(opcodes: &[Opcode]) -> bool {
-        if opcodes.is_empty() {
-            return false;
-        }
-
-        if !matches!(opcodes.last(), Some(Opcode::ReturnMatch(_))) {
-            return false;
-        }
-
-        let mut stack_depth: i32 = 0;
-
-        for opcode in opcodes {
-            match opcode {
-                Opcode::PushMatch(_) => {
-                    stack_depth += 1;
-                }
-                Opcode::And | Opcode::Or => {
-                    if stack_depth < 2 {
-                        return false;
-                    }
-                    stack_depth -= 1;
-                }
-                Opcode::Not => {
-                    if stack_depth < 1 {
-                        return false;
-                    }
-                }
-                Opcode::ReturnMatch(_) => {
-                    if stack_depth < 1 {
-                        return false;
-                    }
-                    stack_depth -= 1;
-                }
-            }
-        }
-
-        stack_depth == 0
-    }
-
-    /// Check if this chunk can be safely executed unchecked.
-    pub fn can_execute_unchecked(
-        &self,
-        primitive_results_len: usize,
-        vm_stack_size: usize,
-    ) -> bool {
-        if !self.is_validated {
-            return false;
-        }
-
-        if self.max_stack_depth > vm_stack_size {
-            return false;
-        }
-
-        if let Some(max_id) = self.max_primitive_id {
-            if max_id as usize >= primitive_results_len {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    /// Analyze bytecode complexity for adaptive execution.
-    fn analyze_complexity(opcodes: &[Opcode], max_stack_depth: usize) -> ChunkComplexity {
-        let opcode_count = opcodes.len();
-        let mut logical_op_count = 0;
-
-        for opcode in opcodes {
-            match opcode {
-                Opcode::And | Opcode::Or | Opcode::Not => {
-                    logical_op_count += 1;
-                }
-                _ => {}
-            }
-        }
-        if opcode_count <= 5 && max_stack_depth <= 2 && logical_op_count <= 1 {
-            ChunkComplexity::Simple
-        } else if opcode_count <= 15 && max_stack_depth <= 4 && logical_op_count <= 5 {
-            ChunkComplexity::Medium
-        } else {
-            ChunkComplexity::Complex
+            field: field.to_string(),
+            match_type: match_type.to_string(),
+            values: values.iter().map(|&v| v.to_string()).collect(),
+            modifiers: modifiers.iter().map(|&m| m.to_string()).collect(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct CompiledRuleset {
-    pub chunks: Vec<BytecodeChunk>,
     pub primitive_map: HashMap<Primitive, PrimitiveId>,
     pub primitives: Vec<Primitive>,
 }
@@ -239,7 +65,6 @@ pub struct CompiledRuleset {
 impl CompiledRuleset {
     pub fn new() -> Self {
         Self {
-            chunks: Vec::new(),
             primitive_map: HashMap::new(),
             primitives: Vec::new(),
         }
@@ -273,9 +98,10 @@ mod tests {
             vec![],
         );
 
-        assert_eq!(prim.field, "EventID");
-        assert_eq!(prim.match_type, "equals");
-        assert_eq!(prim.values, vec!["4624"]);
+        assert_eq!(prim.field.as_str(), "EventID");
+        assert_eq!(prim.match_type.as_str(), "equals");
+        assert_eq!(prim.values.len(), 1);
+        assert_eq!(prim.values[0].as_str(), "4624");
         assert!(prim.modifiers.is_empty());
     }
 
@@ -288,38 +114,31 @@ mod tests {
             &["case_insensitive"],
         );
 
+        assert_eq!(prim.field.as_str(), "EventID");
+        assert_eq!(prim.match_type.as_str(), "equals");
+        assert_eq!(prim.values.len(), 2);
+        assert_eq!(prim.values[0].as_str(), "4624");
+        assert_eq!(prim.values[1].as_str(), "4625");
+        assert_eq!(prim.modifiers.len(), 1);
+        assert_eq!(prim.modifiers[0].as_str(), "case_insensitive");
+    }
+
+    #[test]
+    fn test_primitive_from_strs_creation() {
+        let prim = Primitive::from_strs(
+            "EventID",
+            "equals",
+            &["4624", "4625"],
+            &["case_insensitive"],
+        );
+
         assert_eq!(prim.field, "EventID");
         assert_eq!(prim.match_type, "equals");
-        assert_eq!(prim.values, vec!["4624", "4625"]);
-        assert_eq!(prim.modifiers, vec!["case_insensitive"]);
-    }
-
-    #[test]
-    fn test_bytecode_chunk_stack_depth() {
-        let opcodes = vec![
-            Opcode::PushMatch(0),
-            Opcode::PushMatch(1),
-            Opcode::And,
-            Opcode::ReturnMatch(1),
-        ];
-
-        let chunk = BytecodeChunk::new(1, opcodes);
-        assert_eq!(chunk.max_stack_depth, 2);
-    }
-
-    #[test]
-    fn test_bytecode_chunk_complex_stack_depth() {
-        let opcodes = vec![
-            Opcode::PushMatch(0),
-            Opcode::PushMatch(1),
-            Opcode::PushMatch(2),
-            Opcode::Or,
-            Opcode::And,
-            Opcode::ReturnMatch(1),
-        ];
-
-        let chunk = BytecodeChunk::new(1, opcodes);
-        assert_eq!(chunk.max_stack_depth, 3);
+        assert_eq!(prim.values.len(), 2);
+        assert_eq!(prim.values[0], "4624");
+        assert_eq!(prim.values[1], "4625");
+        assert_eq!(prim.modifiers.len(), 1);
+        assert_eq!(prim.modifiers[0], "case_insensitive");
     }
 
     #[test]
@@ -334,5 +153,192 @@ mod tests {
         assert_eq!(ruleset.primitive_count(), 1);
         assert_eq!(ruleset.get_primitive(0), Some(&prim));
         assert_eq!(ruleset.get_primitive(1), None);
+    }
+
+    #[test]
+    fn test_compiled_ruleset_default() {
+        let ruleset = CompiledRuleset::default();
+        assert_eq!(ruleset.primitive_count(), 0);
+        assert!(ruleset.primitive_map.is_empty());
+        assert!(ruleset.primitives.is_empty());
+    }
+
+    #[test]
+    fn test_primitive_equality_and_hashing() {
+        let prim1 = Primitive::new(
+            "EventID".to_string(),
+            "equals".to_string(),
+            vec!["4624".to_string()],
+            vec!["case_insensitive".to_string()],
+        );
+
+        let prim2 = Primitive::new(
+            "EventID".to_string(),
+            "equals".to_string(),
+            vec!["4624".to_string()],
+            vec!["case_insensitive".to_string()],
+        );
+
+        let prim3 = Primitive::new(
+            "EventID".to_string(),
+            "equals".to_string(),
+            vec!["4625".to_string()], // Different value
+            vec!["case_insensitive".to_string()],
+        );
+
+        // Test equality
+        assert_eq!(prim1, prim2);
+        assert_ne!(prim1, prim3);
+        assert_ne!(prim2, prim3);
+
+        // Test that equal primitives can be used as HashMap keys
+        let mut map = HashMap::new();
+        map.insert(prim1.clone(), 0);
+        map.insert(prim2.clone(), 1); // Should overwrite the first entry
+        map.insert(prim3.clone(), 2);
+
+        assert_eq!(map.len(), 2); // Only 2 unique primitives
+        assert_eq!(map.get(&prim1), Some(&1)); // prim2 overwrote prim1's value
+        assert_eq!(map.get(&prim2), Some(&1));
+        assert_eq!(map.get(&prim3), Some(&2));
+    }
+
+    #[test]
+    fn test_primitive_clone() {
+        let prim = Primitive::new(
+            "EventID".to_string(),
+            "equals".to_string(),
+            vec!["4624".to_string(), "4625".to_string()],
+            vec!["case_insensitive".to_string()],
+        );
+
+        let cloned = prim.clone();
+        assert_eq!(prim, cloned);
+        assert_eq!(prim.field, cloned.field);
+        assert_eq!(prim.match_type, cloned.match_type);
+        assert_eq!(prim.values, cloned.values);
+        assert_eq!(prim.modifiers, cloned.modifiers);
+    }
+
+    #[test]
+    fn test_primitive_debug_format() {
+        let prim = Primitive::new(
+            "EventID".to_string(),
+            "equals".to_string(),
+            vec!["4624".to_string()],
+            vec!["case_insensitive".to_string()],
+        );
+
+        let debug_str = format!("{:?}", prim);
+        assert!(debug_str.contains("EventID"));
+        assert!(debug_str.contains("equals"));
+        assert!(debug_str.contains("4624"));
+        assert!(debug_str.contains("case_insensitive"));
+    }
+
+    #[test]
+    fn test_primitive_empty_values_and_modifiers() {
+        let prim = Primitive::new(
+            "EventID".to_string(),
+            "exists".to_string(),
+            vec![], // Empty values
+            vec![], // Empty modifiers
+        );
+
+        assert_eq!(prim.field, "EventID");
+        assert_eq!(prim.match_type, "exists");
+        assert!(prim.values.is_empty());
+        assert!(prim.modifiers.is_empty());
+    }
+
+    #[test]
+    fn test_primitive_multiple_values_and_modifiers() {
+        let prim = Primitive::new(
+            "EventID".to_string(),
+            "equals".to_string(),
+            vec!["4624".to_string(), "4625".to_string(), "4648".to_string()],
+            vec!["case_insensitive".to_string(), "trim".to_string()],
+        );
+
+        assert_eq!(prim.values.len(), 3);
+        assert_eq!(prim.values[0], "4624");
+        assert_eq!(prim.values[1], "4625");
+        assert_eq!(prim.values[2], "4648");
+
+        assert_eq!(prim.modifiers.len(), 2);
+        assert_eq!(prim.modifiers[0], "case_insensitive");
+        assert_eq!(prim.modifiers[1], "trim");
+    }
+
+    #[test]
+    fn test_compiled_ruleset_multiple_primitives() {
+        let mut ruleset = CompiledRuleset::new();
+
+        let prim1 = Primitive::new_static("EventID", "equals", &["4624"], &[]);
+        let prim2 = Primitive::new_static("LogonType", "equals", &["2"], &[]);
+        let prim3 = Primitive::new_static(
+            "TargetUserName",
+            "contains",
+            &["admin"],
+            &["case_insensitive"],
+        );
+
+        ruleset.primitive_map.insert(prim1.clone(), 0);
+        ruleset.primitive_map.insert(prim2.clone(), 1);
+        ruleset.primitive_map.insert(prim3.clone(), 2);
+
+        ruleset.primitives.push(prim1.clone());
+        ruleset.primitives.push(prim2.clone());
+        ruleset.primitives.push(prim3.clone());
+
+        assert_eq!(ruleset.primitive_count(), 3);
+        assert_eq!(ruleset.get_primitive(0), Some(&prim1));
+        assert_eq!(ruleset.get_primitive(1), Some(&prim2));
+        assert_eq!(ruleset.get_primitive(2), Some(&prim3));
+        assert_eq!(ruleset.get_primitive(3), None);
+        assert_eq!(ruleset.get_primitive(999), None);
+    }
+
+    #[test]
+    fn test_compiled_ruleset_clone() {
+        let mut ruleset = CompiledRuleset::new();
+        let prim = Primitive::new_static("EventID", "equals", &["4624"], &[]);
+        ruleset.primitive_map.insert(prim.clone(), 0);
+        ruleset.primitives.push(prim.clone());
+
+        let cloned = ruleset.clone();
+        assert_eq!(cloned.primitive_count(), 1);
+        assert_eq!(cloned.get_primitive(0), Some(&prim));
+        assert_eq!(cloned.primitive_map.len(), 1);
+    }
+
+    #[test]
+    fn test_compiled_ruleset_debug_format() {
+        let mut ruleset = CompiledRuleset::new();
+        let prim = Primitive::new_static("EventID", "equals", &["4624"], &[]);
+        ruleset.primitive_map.insert(prim.clone(), 0);
+        ruleset.primitives.push(prim);
+
+        let debug_str = format!("{:?}", ruleset);
+        assert!(debug_str.contains("CompiledRuleset"));
+        assert!(debug_str.contains("primitive_map"));
+        assert!(debug_str.contains("primitives"));
+    }
+
+    #[test]
+    fn test_primitive_id_and_rule_id_types() {
+        // Test that PrimitiveId and RuleId are the expected types
+        let primitive_id: PrimitiveId = 42;
+        let rule_id: RuleId = 123;
+
+        assert_eq!(primitive_id, 42u32);
+        assert_eq!(rule_id, 123u32);
+
+        // Test that they can be used in collections
+        let primitive_ids = [0, 1, 2];
+        let rule_ids = [100, 200, 300];
+
+        assert_eq!(primitive_ids.len(), 3);
+        assert_eq!(rule_ids.len(), 3);
     }
 }

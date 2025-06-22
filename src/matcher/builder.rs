@@ -4,27 +4,89 @@ use crate::error::{Result, SigmaError};
 use crate::ir::Primitive;
 use crate::matcher::{
     CompilationContext, CompilationHookFn, CompilationPhase, CompiledPrimitive, EventContext,
-    FieldExtractorFn, FunctionalMatcher, MatchFn, ModifierFn,
+    FieldExtractorFn, MatchFn, ModifierFn,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Builder for constructing high-performance matchers with registry pattern.
 ///
-/// Uses the registry pattern to allow flexible registration of match functions
-/// and modifiers while maintaining zero-allocation evaluation performance.
+/// The `MatcherBuilder` provides a flexible registry system for registering custom
+/// match functions and modifiers while maintaining zero-allocation evaluation performance.
+/// It follows the builder pattern for easy configuration and supports extensive
+/// customization of the matching behavior.
 ///
-/// # Example
+///
+/// # Default Implementations
+///
+/// The builder comes pre-configured with comprehensive default implementations:
+///
+/// ## Match Types
+/// - `equals` - Exact string matching (case-sensitive by default)
+/// - `contains` - Substring matching
+/// - `startswith` - Prefix matching
+/// - `endswith` - Suffix matching
+/// - `regex` - Regular expression matching
+/// - `cidr` - CIDR network matching for IP addresses
+/// - `range` - Numeric range matching
+/// - `fuzzy` - Fuzzy string matching with configurable threshold
+///
+/// ## Modifiers
+/// - `base64_decode` - Base64 decoding
+/// - `utf16_decode` - UTF-16 decoding
+/// - `lowercase` - Convert to lowercase
+/// - `uppercase` - Convert to uppercase
+/// - `trim` - Remove leading/trailing whitespace
+/// - And many more (see [`defaults`] module)
+///
+///
+/// # Examples
+///
+/// ## Basic Usage
+/// ```rust,ignore
+/// use sigma_engine::matcher::MatcherBuilder;
+///
+/// // Use default implementations
+/// let matcher = MatcherBuilder::new()
+///     .compile(&primitives)?;
+/// ```
+///
+/// ## Custom Match Function
 /// ```rust,ignore
 /// use sigma_engine::matcher::MatcherBuilder;
 ///
 /// let matcher = MatcherBuilder::new()
 ///     .register_match("custom_equals", |field_value, values, _modifiers| {
-///         values.iter().any(|&v| field_value == v)
+///         Ok(values.iter().any(|&v| field_value == v))
 ///     })
-///     .register_modifier("custom_upper", |input| Ok(input.to_uppercase()))
 ///     .compile(&primitives)?;
 /// ```
+///
+/// ## Custom Modifier
+/// ```rust,ignore
+/// use sigma_engine::matcher::MatcherBuilder;
+///
+/// let matcher = MatcherBuilder::new()
+///     .register_modifier("custom_upper", |input| {
+///         Ok(input.to_uppercase())
+///     })
+///     .compile(&primitives)?;
+/// ```
+///
+/// ## External Library Integration
+/// ```rust,ignore
+/// use sigma_engine::matcher::MatcherBuilder;
+///
+/// let matcher = MatcherBuilder::new()
+///     .with_aho_corasick_extraction(|literals| {
+///         // Build AhoCorasick automaton from extracted literals
+///         println!("Building automaton with {} literals", literals.len());
+///     })
+///     .compile(&primitives)?;
+/// ```
+///
+///
+/// [`defaults`]: crate::matcher::defaults
 pub struct MatcherBuilder {
     /// Registry of match functions by match type name
     match_registry: HashMap<String, MatchFn>,
@@ -267,13 +329,13 @@ impl MatcherBuilder {
         self
     }
 
-    /// Compile primitives into high-performance matcher with hook execution.
+    /// Compile primitives into compiled primitives with hook execution.
     ///
     /// # Arguments
     /// * `primitives` - Array of primitives to compile
     ///
     /// # Returns
-    /// * `Ok(FunctionalMatcher)` - Compiled matcher ready for evaluation
+    /// * `Ok(Vec<CompiledPrimitive>)` - Compiled primitives ready for evaluation
     /// * `Err(SigmaError)` - Compilation failed
     ///
     /// # Example
@@ -281,9 +343,9 @@ impl MatcherBuilder {
     /// let primitives = vec![
     ///     Primitive::new_static("EventID", "equals", &["4624"], &[]),
     /// ];
-    /// let matcher = builder.compile(&primitives)?;
+    /// let compiled_primitives = builder.compile(&primitives)?;
     /// ```
-    pub fn compile(self, primitives: &[Primitive]) -> Result<FunctionalMatcher> {
+    pub fn compile(self, primitives: &[Primitive]) -> Result<Vec<CompiledPrimitive>> {
         // Execute pre-compilation hooks
         if let Some(hooks) = self
             .compilation_hooks
@@ -321,40 +383,50 @@ impl MatcherBuilder {
             }
         }
 
-        Ok(FunctionalMatcher::new(
-            compiled_primitives,
-            self.field_extractor
-                .unwrap_or_else(|| Arc::new(default_field_extractor)),
-        ))
+        Ok(compiled_primitives)
     }
 
     /// Compile a single primitive into a CompiledPrimitive.
     fn compile_primitive(&self, primitive: &Primitive) -> Result<CompiledPrimitive> {
         // Pre-parse field path for nested access
-        let field_path: Vec<String> = primitive.field.split('.').map(|s| s.to_string()).collect();
+        let field_path: Vec<String> = primitive
+            .field
+            .as_str()
+            .split('.')
+            .map(|s| s.to_string())
+            .collect();
 
         // Get match function
         let match_fn = self
             .match_registry
-            .get(primitive.match_type.as_ref())
-            .ok_or_else(|| SigmaError::UnsupportedMatchType(primitive.match_type.to_string()))?
+            .get(primitive.match_type.as_str())
+            .ok_or_else(|| {
+                SigmaError::UnsupportedMatchType(primitive.match_type.as_str().to_string())
+            })?
             .clone();
 
         // Pre-compile modifier chain
         let mut modifier_chain = Vec::new();
         for modifier in &primitive.modifiers {
-            if let Some(modifier_fn) = self.modifier_registry.get(modifier.as_ref()) {
+            if let Some(modifier_fn) = self.modifier_registry.get(modifier.as_str()) {
                 modifier_chain.push(modifier_fn.clone());
             }
             // Note: Missing modifiers are silently ignored for now
             // In production, this might be configurable behavior
         }
 
-        // Pre-allocate values and modifiers
-        let values: Vec<String> = primitive.values.iter().map(|v| v.to_string()).collect();
+        // Pre-allocate values and modifiers - use interned strings directly for efficiency
+        let values: Vec<String> = primitive
+            .values
+            .iter()
+            .map(|v| v.as_str().to_string())
+            .collect();
 
-        let raw_modifiers: Vec<String> =
-            primitive.modifiers.iter().map(|m| m.to_string()).collect();
+        let raw_modifiers: Vec<String> = primitive
+            .modifiers
+            .iter()
+            .map(|m| m.as_str().to_string())
+            .collect();
 
         Ok(CompiledPrimitive::new(
             field_path,
@@ -373,10 +445,10 @@ impl MatcherBuilder {
         hooks: &[CompilationHookFn],
     ) -> Result<()> {
         // Extract literal values from the primitive
-        let literal_values: Vec<&str> = primitive.values.iter().map(|v| v.as_ref()).collect();
+        let literal_values: Vec<&str> = primitive.values.iter().map(|v| v.as_str()).collect();
 
         // Extract modifier names
-        let modifiers: Vec<&str> = primitive.modifiers.iter().map(|m| m.as_ref()).collect();
+        let modifiers: Vec<&str> = primitive.modifiers.iter().map(|m| m.as_str()).collect();
 
         // Calculate selectivity hint based on match type and values
         let selectivity_hint = self.calculate_selectivity_hint(primitive);
@@ -390,9 +462,9 @@ impl MatcherBuilder {
             rule_id,
             None, // Rule name not available at this level
             &literal_values,
-            primitive.field.as_ref(), // Raw field
-            primitive.field.as_ref(), // Normalized field (same for now)
-            primitive.match_type.as_ref(),
+            primitive.field.as_str(), // Raw field
+            primitive.field.as_str(), // Normalized field (same for now)
+            primitive.match_type.as_str(),
             &modifiers,
             is_literal_only,
             selectivity_hint,
@@ -424,11 +496,7 @@ impl MatcherBuilder {
             "equals" | "contains" | "startswith" | "endswith" => {
                 // Check if any values contain wildcards or regex patterns
                 !primitive.values.iter().any(|v| {
-                    let value = v.as_ref();
-                    value.contains('*')
-                        || value.contains('?')
-                        || value.contains('[')
-                        || value.contains('^')
+                    v.contains('*') || v.contains('?') || v.contains('[') || v.contains('^')
                 })
             }
             "regex" => false, // Regex patterns are not literal
@@ -489,12 +557,6 @@ impl Default for MatcherBuilder {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Default field extractor implementation.
-fn default_field_extractor(context: &EventContext, field: &str) -> Result<Option<String>> {
-    // Use the EventContext's built-in field extraction
-    context.get_field(field)
 }
 
 #[cfg(test)]

@@ -21,7 +21,6 @@ help:
 	@echo ""
 	@echo "Performance:"
 	@echo "  bench         - Run performance benchmarks"
-	@echo "  bench-vm      - Run VM-specific benchmarks"
 	@echo "  bench-e2e     - Run end-to-end benchmarks"
 	@echo "  bench-scaling - Run rule scaling benchmarks"
 	@echo ""
@@ -32,129 +31,122 @@ help:
 	@echo ""
 
 build:
-	@echo "🔨 Building SIGMA Engine..."
+	@echo "Building SIGMA Engine..."
 	cargo build
 
 build-release:
-	@echo "🔨 Building SIGMA Engine (release)..."
+	@echo "Building SIGMA Engine (release)..."
 	cargo build --release
 
 test:
-	@echo "🧪 Running tests..."
+	@echo "Running tests..."
 	cargo test --all-features
 
 test-all: test
-	@echo "📚 Running doc tests..."
+	@echo "Running doc tests..."
 	cargo test --doc
 
 # Code quality targets
 fmt:
-	@echo "🎨 Formatting code..."
+	@echo "Formatting code..."
 	cargo fmt --all
 
 fmt-check:
-	@echo "🎨 Checking code formatting..."
+	@echo "Checking code formatting..."
 	cargo fmt --all -- --check
 
 lint:
-	@echo "🔍 Running clippy linter..."
+	@echo "Running clippy linter..."
 	cargo clippy --all-targets --all-features -- -D warnings
 
 coverage:
-	@echo "📊 Generating coverage report..."
+	@echo "Generating coverage report..."
 	@./scripts/coverage.sh
 
 docs:
-	@echo "📖 Building documentation..."
+	@echo "Building documentation..."
 	cargo doc --all-features --no-deps --open
 
 quality:
-	@echo "🔍 Running comprehensive quality checks..."
+	@echo "Running comprehensive quality checks..."
 	@./scripts/quality.sh
 
 # Performance targets
 bench:
-	@echo "⚡ Running all benchmarks..."
+	@echo "Running all benchmarks..."
 	cargo bench
 
-bench-vm:
-	@echo "⚡ Running VM benchmarks..."
-	cargo bench --bench vm_execution
-
 bench-e2e:
-	@echo "⚡ Running end-to-end benchmarks..."
+	@echo "Running end-to-end benchmarks..."
 	cargo bench --bench end_to_end
 
 bench-scaling:
-	@echo "⚡ Running rule scaling benchmarks..."
+	@echo "Running rule scaling benchmarks..."
 	cargo bench --bench rule_scaling
 
 # Security and maintenance
 audit:
-	@echo "🔒 Running security audit..."
+	@echo "Running security audit..."
 	@if command -v cargo-audit >/dev/null 2>&1; then \
 		cargo audit; \
 	else \
-		echo "❌ cargo-audit not installed. Run 'make install-tools' first."; \
+		echo "cargo-audit not installed. Run 'make install-tools' first."; \
 		exit 1; \
 	fi
 
 # Development tools installation
 install-tools:
-	@echo "🛠️  Installing development tools..."
-	@echo "📦 Installing cargo-tarpaulin (coverage)..."
+	@echo "Installing development tools..."
+	@echo " Installing cargo-tarpaulin (coverage)..."
 	cargo install cargo-tarpaulin
-	@echo "🔒 Installing cargo-audit (security)..."
+	@echo "Installing cargo-audit (security)..."
 	cargo install cargo-audit
-	@echo "🔥 Installing cargo-flamegraph (profiling)..."
+	@echo "Installing cargo-flamegraph (profiling)..."
 	cargo install flamegraph
-	@echo "✅ All tools installed successfully!"
+	@echo "All tools installed successfully!"
 
 # CI pipeline simulation
 ci-local: fmt-check lint test-all coverage audit docs
 	@echo ""
-	@echo "🎉 Local CI pipeline completed successfully!"
-	@echo "✅ All checks passed - ready for commit/push"
+	@echo "Local CI pipeline completed successfully!"
+	@echo "All checks passed - ready for commit/push"
 
 # Utility targets
 clean:
-	@echo "🧹 Cleaning build artifacts..."
+	@echo "Cleaning build artifacts..."
 	cargo clean
 	rm -rf target/coverage
 	rm -rf target/criterion
 	rm -rf target/flamegraphs
 
-# Example and demo targets
-demo:
-	@echo "🚀 Running engine demo..."
-	cargo run --example engine_demo
+# Demo targets
 
 demo-2k:
-	@echo "🚀 Running 2k rules demo..."
+	@echo "Running 2k rules demo..."
 	@./scripts/demo_2k_rules.sh
 
 profile-vm:
-	@echo "🔍 Profiling VM execution..."
+	@echo "Profiling VM execution..."
 	@./scripts/profile.sh
 
 profile-scaling:
-	@echo "🔍 Profiling rule scaling..."
+	@echo "Profiling rule scaling..."
 	cargo flamegraph --bench rule_scaling --output target/flamegraphs/rule_scaling.svg
 
 dev-setup: install-tools setup-hooks
-	@echo "🏗️  Setting up development environment..."
-	@echo "✅ Development environment ready!"
+	@echo "Setting up development environment..."
+	@echo "Development environment ready!"
 
 setup-hooks:
-	@echo "🔧 Setting up git hooks..."
+	@echo "Setting up git hooks..."
 	@./scripts/setup-hooks.sh
 
 quick-check: fmt lint test
-	@echo "⚡ Quick development check completed!"
+	@echo "Quick development check completed!"
 
 full-check: ci-local
-	@echo "🔍 Full quality check completed!"
+	@echo "Full quality check completed!"
 
 pre-release: clean ci-local bench
-	@echo "🚀 Pre-release checks completed!"
-	@echo "📦 Ready for release!"
+	@echo "Pre-release checks completed!"
+	@echo "Ready for release!"

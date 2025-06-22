@@ -6,7 +6,26 @@
 
 use crate::error::SigmaError;
 use crate::ir::Primitive;
+use crate::matcher::hooks::{CompilationContext, CompilationHookFn};
 use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Statistics collected during filter compilation for optimization decisions.
+#[derive(Debug, Clone, Default)]
+pub struct FilterCompilationStats {
+    /// Total number of primitives processed
+    pub total_primitives: usize,
+    /// Number of literal-only primitives (suitable for fast filters)
+    pub literal_primitives: usize,
+    /// Number of regex primitives (need separate handling)
+    pub regex_primitives: usize,
+    /// Number of unique fields encountered
+    pub unique_fields: usize,
+    /// Average selectivity across all patterns
+    pub average_selectivity: f64,
+    /// Estimated memory usage for filters (in bytes)
+    pub estimated_memory_usage: usize,
+}
 
 /// Helper for collecting patterns and values for external filter integration.
 ///
@@ -41,6 +60,12 @@ pub struct FilterIntegration {
     /// Regex patterns that need separate handling
     pub regex_patterns: Vec<String>,
 
+    /// Values suitable for Bloom filter insertion
+    pub bloom_filter_values: Vec<String>,
+
+    /// Values suitable for XOR filter insertion (requires exact membership)
+    pub xor_filter_values: Vec<String>,
+
     /// Selectivity hints for optimization (pattern -> selectivity score)
     pub selectivity_map: HashMap<String, f64>,
 
@@ -49,6 +74,12 @@ pub struct FilterIntegration {
 
     /// Field access frequency for cache optimization
     pub field_frequency: HashMap<String, usize>,
+
+    /// Zero-copy pattern references for optimization
+    pub zero_copy_patterns: Vec<&'static str>,
+
+    /// Compilation statistics for optimization decisions
+    pub compilation_stats: FilterCompilationStats,
 }
 
 impl FilterIntegration {
@@ -135,6 +166,165 @@ impl FilterIntegration {
 
         self.selectivity_map
             .insert(pattern.to_string(), selectivity);
+    }
+
+    /// Add a value for Bloom filter insertion.
+    ///
+    /// Bloom filters provide probabilistic membership testing with false positives
+    /// but no false negatives. Suitable for pre-filtering with high-volume data.
+    pub fn add_bloom_filter_value(&mut self, value: &str, selectivity: f64) {
+        if !self.bloom_filter_values.contains(&value.to_string()) {
+            self.bloom_filter_values.push(value.to_string());
+        }
+
+        self.selectivity_map.insert(value.to_string(), selectivity);
+        *self.pattern_frequency.entry(value.to_string()).or_insert(0) += 1;
+    }
+
+    /// Add a value for XOR filter insertion.
+    ///
+    /// XOR filters provide exact membership testing with no false positives or negatives.
+    /// More memory efficient than hash sets for static data.
+    pub fn add_xor_filter_value(&mut self, value: &str, selectivity: f64) {
+        if !self.xor_filter_values.contains(&value.to_string()) {
+            self.xor_filter_values.push(value.to_string());
+        }
+
+        self.selectivity_map.insert(value.to_string(), selectivity);
+        *self.pattern_frequency.entry(value.to_string()).or_insert(0) += 1;
+    }
+
+    /// Add a zero-copy pattern reference for optimization.
+    ///
+    /// This method allows referencing static string literals without allocation,
+    /// providing optimal performance for frequently used patterns.
+    pub fn add_zero_copy_pattern(&mut self, pattern: &'static str, selectivity: f64) {
+        if !self.zero_copy_patterns.contains(&pattern) {
+            self.zero_copy_patterns.push(pattern);
+        }
+
+        self.selectivity_map
+            .insert(pattern.to_string(), selectivity);
+        *self
+            .pattern_frequency
+            .entry(pattern.to_string())
+            .or_insert(0) += 1;
+    }
+
+    /// Create a compilation hook that automatically populates this FilterIntegration.
+    ///
+    /// This hook can be registered with MatcherBuilder to automatically extract
+    /// patterns during compilation without manual intervention.
+    ///
+    /// # Returns
+    /// A compilation hook function that can be registered with MatcherBuilder.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use sigma_engine::matcher::filters::FilterIntegration;
+    /// use sigma_engine::MatcherBuilder;
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// let integration = Arc::new(Mutex::new(FilterIntegration::new()));
+    /// let hook = FilterIntegration::create_compilation_hook(integration.clone());
+    ///
+    /// let builder = MatcherBuilder::new()
+    ///     .register_compilation_hook(CompilationPhase::PrimitiveDiscovery, hook);
+    /// ```
+    pub fn create_compilation_hook(
+        integration: Arc<std::sync::Mutex<FilterIntegration>>,
+    ) -> CompilationHookFn {
+        Arc::new(move |context: &CompilationContext| {
+            let mut integration = integration.lock().map_err(|_| {
+                SigmaError::CompilationError(
+                    "Failed to acquire filter integration lock".to_string(),
+                )
+            })?;
+
+            // Update compilation statistics
+            integration.compilation_stats.total_primitives += 1;
+            if context.is_literal_only {
+                integration.compilation_stats.literal_primitives += 1;
+            }
+            if context.match_type == "regex" {
+                integration.compilation_stats.regex_primitives += 1;
+            }
+
+            // Extract patterns based on match type and selectivity
+            let selectivity = integration.estimate_selectivity_from_context(context);
+
+            match context.match_type {
+                "equals" | "contains" | "startswith" | "endswith" if context.is_literal_only => {
+                    for &value in context.literal_values {
+                        // Add to AhoCorasick for multi-pattern matching
+                        integration.add_aho_corasick_pattern(
+                            value,
+                            Some(context.normalized_field),
+                            selectivity,
+                        );
+
+                        // Add to FST if highly selective
+                        if selectivity < 0.3 {
+                            integration.add_fst_value(value, selectivity);
+                        }
+
+                        // Add to XOR filter if very selective and exact matching
+                        if selectivity <= 0.1 && context.match_type == "equals" {
+                            integration.add_xor_filter_value(value, selectivity);
+                        }
+
+                        // Add to Bloom filter for probabilistic pre-filtering
+                        if selectivity < 0.5 {
+                            integration.add_bloom_filter_value(value, selectivity);
+                        }
+                    }
+                }
+                "regex" => {
+                    for &value in context.literal_values {
+                        integration.add_regex_pattern(
+                            value,
+                            Some(context.normalized_field),
+                            selectivity,
+                        );
+                    }
+                }
+                _ => {
+                    // Handle other match types with general filter values
+                    for &value in context.literal_values {
+                        integration.add_filter_value(value, selectivity);
+                    }
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Estimate selectivity from compilation context.
+    fn estimate_selectivity_from_context(&self, context: &CompilationContext) -> f64 {
+        let base_selectivity = match context.match_type {
+            "equals" => 0.1,                  // Very selective
+            "contains" => 0.3,                // Moderately selective
+            "startswith" | "endswith" => 0.2, // Selective
+            "regex" => 0.5,                   // Variable selectivity
+            "cidr" => 0.4,                    // Network-dependent
+            "range" => 0.6,                   // Range-dependent
+            "fuzzy" => 0.7,                   // Generally less selective
+            _ => 0.5,                         // Unknown - assume moderate
+        };
+
+        // Adjust based on modifiers
+        let modifier_adjustment = if context.modifiers.is_empty() {
+            1.0
+        } else {
+            // Modifiers generally make matching less selective
+            1.2
+        };
+
+        // Adjust based on value count (more values = less selective)
+        let value_count_adjustment = 1.0 + (context.literal_values.len() as f64 * 0.1);
+
+        (base_selectivity * modifier_adjustment * value_count_adjustment).min(1.0)
     }
 
     /// Get patterns optimized for AhoCorasick construction.
@@ -226,41 +416,60 @@ impl FilterIntegration {
     /// filter integration strategy.
     pub fn extract_from_primitive(&mut self, primitive: &Primitive) -> Result<(), SigmaError> {
         let selectivity = self.estimate_selectivity(primitive);
-        let field = Some(primitive.field.as_ref());
+        let field = Some(primitive.field.as_str());
 
-        match primitive.match_type.as_ref() {
+        // Update compilation statistics
+        self.compilation_stats.total_primitives += 1;
+        if primitive.match_type.as_str() == "regex" {
+            self.compilation_stats.regex_primitives += 1;
+        } else {
+            self.compilation_stats.literal_primitives += 1;
+        }
+
+        match primitive.match_type.as_str() {
             "equals" | "contains" | "startswith" | "endswith" => {
-                // Literal patterns suitable for AhoCorasick
+                // Literal patterns suitable for multiple filter types
                 for value in &primitive.values {
-                    self.add_aho_corasick_pattern(value, field, selectivity);
+                    let value_str = value.as_str();
+                    self.add_aho_corasick_pattern(value_str, field, selectivity);
 
-                    // Also add to FST if highly selective
+                    // Add to FST if highly selective
                     if selectivity < 0.3 {
-                        self.add_fst_value(value, selectivity);
+                        self.add_fst_value(value_str, selectivity);
                     }
 
-                    // Add to probabilistic filters if very selective
-                    if selectivity < 0.1 {
-                        self.add_filter_value(value, selectivity);
+                    // Add to XOR filter if very selective and exact matching
+                    if selectivity <= 0.1 && primitive.match_type.as_str() == "equals" {
+                        self.add_xor_filter_value(value_str, selectivity);
+                    }
+
+                    // Add to Bloom filter for probabilistic pre-filtering
+                    if selectivity < 0.5 {
+                        self.add_bloom_filter_value(value_str, selectivity);
+                    }
+
+                    // Add to general filter values if very selective
+                    if selectivity <= 0.1 {
+                        self.add_filter_value(value_str, selectivity);
                     }
                 }
             }
             "regex" => {
                 // Regex patterns need separate handling
                 for value in &primitive.values {
-                    self.add_regex_pattern(value, field, selectivity);
+                    self.add_regex_pattern(value.as_str(), field, selectivity);
                 }
             }
             "cidr" | "range" | "fuzzy" => {
                 // Complex patterns - add to filter values for membership testing
                 for value in &primitive.values {
-                    self.add_filter_value(value, selectivity);
+                    self.add_filter_value(value.as_str(), selectivity);
                 }
             }
             _ => {
                 // Unknown match type - conservative approach
                 for value in &primitive.values {
-                    self.add_filter_value(value, selectivity);
+                    self.add_filter_value(value.as_str(), selectivity);
                 }
             }
         }
@@ -268,9 +477,34 @@ impl FilterIntegration {
         Ok(())
     }
 
+    /// Get all regex patterns for separate compilation.
+    pub fn get_regex_patterns(&self) -> &[String] {
+        &self.regex_patterns
+    }
+
+    /// Get all Bloom filter values.
+    pub fn get_bloom_filter_values(&self) -> &[String] {
+        &self.bloom_filter_values
+    }
+
+    /// Get all XOR filter values.
+    pub fn get_xor_filter_values(&self) -> &[String] {
+        &self.xor_filter_values
+    }
+
+    /// Get zero-copy pattern references.
+    pub fn get_zero_copy_patterns(&self) -> &[&'static str] {
+        &self.zero_copy_patterns
+    }
+
+    /// Get compilation statistics.
+    pub fn get_compilation_stats(&self) -> &FilterCompilationStats {
+        &self.compilation_stats
+    }
+
     fn estimate_selectivity(&self, primitive: &Primitive) -> f64 {
         // Estimate selectivity based on match type and value characteristics
-        match primitive.match_type.as_ref() {
+        match primitive.match_type.as_str() {
             "equals" => 0.1,                  // Very selective
             "contains" => 0.3,                // Moderately selective
             "startswith" | "endswith" => 0.2, // Selective
@@ -305,6 +539,9 @@ impl FilterIntegration {
         distribution.insert("fst".to_string(), self.fst_values.len());
         distribution.insert("filter".to_string(), self.filter_values.len());
         distribution.insert("regex".to_string(), self.regex_patterns.len());
+        distribution.insert("bloom".to_string(), self.bloom_filter_values.len());
+        distribution.insert("xor".to_string(), self.xor_filter_values.len());
+        distribution.insert("zero_copy".to_string(), self.zero_copy_patterns.len());
 
         distribution
     }
@@ -382,12 +619,7 @@ mod tests {
     fn test_primitive_extraction() {
         let mut integration = FilterIntegration::new();
 
-        let primitive = Primitive {
-            field: "EventID".into(),
-            match_type: "equals".into(),
-            values: vec!["4624".into()],
-            modifiers: vec![],
-        };
+        let primitive = Primitive::new_static("EventID", "equals", &["4624"], &[]);
 
         integration.extract_from_primitive(&primitive).unwrap();
 
@@ -494,16 +726,50 @@ mod tests {
 
         // Test different match types
         let primitives = vec![
+            Primitive::new_static("EventID", "equals", &["4624"], &[]),
+            Primitive::new_static("ProcessName", "contains", &["powershell"], &[]),
+            Primitive::new_static("CommandLine", "regex", &[".*\\.exe.*"], &[]),
+        ];
+
+        for primitive in primitives {
+            integration.extract_from_primitive(&primitive).unwrap();
+        }
+
+        // Check that patterns were extracted (exact counts may vary based on implementation)
+        assert!(!integration.aho_corasick_patterns.is_empty());
+        assert!(!integration.field_patterns.is_empty());
+    }
+
+    #[test]
+    fn test_new_filter_types() {
+        let mut integration = FilterIntegration::new();
+
+        // Test Bloom filter values
+        integration.add_bloom_filter_value("bloom_value", 0.3);
+        assert_eq!(integration.get_bloom_filter_values().len(), 1);
+        assert_eq!(integration.get_bloom_filter_values()[0], "bloom_value");
+
+        // Test XOR filter values
+        integration.add_xor_filter_value("xor_value", 0.05);
+        assert_eq!(integration.get_xor_filter_values().len(), 1);
+        assert_eq!(integration.get_xor_filter_values()[0], "xor_value");
+
+        // Test zero-copy patterns
+        integration.add_zero_copy_pattern("static_pattern", 0.1);
+        assert_eq!(integration.get_zero_copy_patterns().len(), 1);
+        assert_eq!(integration.get_zero_copy_patterns()[0], "static_pattern");
+    }
+
+    #[test]
+    fn test_compilation_stats() {
+        let mut integration = FilterIntegration::new();
+
+        // Extract from primitives to populate stats
+        let primitives = vec![
             Primitive {
                 field: "EventID".into(),
                 match_type: "equals".into(),
                 values: vec!["4624".into()],
-                modifiers: vec![],
-            },
-            Primitive {
-                field: "ProcessName".into(),
-                match_type: "contains".into(),
-                values: vec!["powershell".into()],
                 modifiers: vec![],
             },
             Primitive {
@@ -518,8 +784,91 @@ mod tests {
             integration.extract_from_primitive(&primitive).unwrap();
         }
 
-        // Check that patterns were extracted (exact counts may vary based on implementation)
+        let stats = integration.get_compilation_stats();
+        assert_eq!(stats.total_primitives, 2);
+        assert_eq!(stats.literal_primitives, 1);
+        assert_eq!(stats.regex_primitives, 1);
+    }
+
+    #[test]
+    fn test_automatic_filter_selection() {
+        let mut integration = FilterIntegration::new();
+
+        // Test equals primitive (very selective) - should go to multiple filters
+        let equals_primitive = Primitive {
+            field: "EventID".into(),
+            match_type: "equals".into(),
+            values: vec!["4624".into()],
+            modifiers: vec![],
+        };
+
+        integration
+            .extract_from_primitive(&equals_primitive)
+            .unwrap();
+
+        // Should be added to AhoCorasick, FST, XOR, Bloom, and general filters
+        // Note: equals match type has selectivity 0.1, which should trigger XOR filter (< 0.1 threshold)
         assert!(!integration.aho_corasick_patterns.is_empty());
-        assert!(!integration.field_patterns.is_empty());
+        assert!(!integration.fst_values.is_empty());
+        assert!(!integration.xor_filter_values.is_empty());
+        assert!(!integration.bloom_filter_values.is_empty());
+        assert!(!integration.filter_values.is_empty());
+
+        // Test contains primitive (moderately selective) - should go to fewer filters
+        let mut integration2 = FilterIntegration::new();
+        let contains_primitive = Primitive {
+            field: "ProcessName".into(),
+            match_type: "contains".into(),
+            values: vec!["powershell".into()],
+            modifiers: vec![],
+        };
+
+        integration2
+            .extract_from_primitive(&contains_primitive)
+            .unwrap();
+
+        // Should be added to AhoCorasick and Bloom, but not XOR (not selective enough)
+        assert!(!integration2.aho_corasick_patterns.is_empty());
+        assert!(!integration2.bloom_filter_values.is_empty());
+        assert!(integration2.xor_filter_values.is_empty()); // Too selective threshold
+    }
+
+    #[test]
+    fn test_compilation_hook_creation() {
+        use crate::ir::Primitive;
+        use std::sync::{Arc, Mutex};
+
+        let integration = Arc::new(Mutex::new(FilterIntegration::new()));
+        let hook = FilterIntegration::create_compilation_hook(integration.clone());
+
+        // Create a test primitive and context
+        let primitive = Primitive::new_static("EventID", "equals", &["test_value"], &[]);
+        let literal_values = ["test_value"];
+        let literal_refs: Vec<&str> = literal_values.to_vec();
+        let modifiers: [&str; 0] = [];
+        let modifier_refs: Vec<&str> = modifiers.to_vec();
+
+        let context = CompilationContext::new(
+            &primitive,
+            1,
+            Some("Test Rule"),
+            &literal_refs,
+            "EventID",
+            "EventID",
+            "equals",
+            &modifier_refs,
+            true,
+            0.1,
+        );
+
+        // Execute the hook
+        let result = hook(&context);
+        assert!(result.is_ok());
+
+        // Check that patterns were added
+        let integration_guard = integration.lock().unwrap();
+        assert!(!integration_guard.aho_corasick_patterns.is_empty());
+        assert_eq!(integration_guard.compilation_stats.total_primitives, 1);
+        assert_eq!(integration_guard.compilation_stats.literal_primitives, 1);
     }
 }

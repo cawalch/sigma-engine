@@ -146,7 +146,7 @@ impl<'a> ConditionParser<'a> {
                                 Ok(ConditionAst::OneOfThem)
                             } else {
                                 Err(SigmaError::CompilationError(
-                                    "Only '1 of them' is currently supported".to_string(),
+                                    "Only '1 of them' is supported".to_string(),
                                 ))
                             }
                         }

@@ -1,134 +1,195 @@
-//! Basic SIGMA Engine Usage Example
+//! Basic SIGMA Engine usage examples.
 //!
-//! This example demonstrates the fundamental usage of SIGMA Engine:
-//! 1. Compiling a simple SIGMA rule
-//! 2. Creating a VM
-//! 3. Executing the rule with mock primitive results
-//!
-//! Run with: `cargo run --example basic_usage --features examples`
+//! This example demonstrates the core functionality of the SIGMA Engine
+//! using the DAG-based execution architecture.
 
-#[cfg(not(feature = "examples"))]
-fn main() {
-    eprintln!("This example requires the 'examples' feature to be enabled.");
-    eprintln!("Run with: cargo run --example basic_usage --features examples");
-    std::process::exit(1);
+use serde_json::json;
+use sigma_engine::{Compiler, SigmaEngine};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("SIGMA Engine Basic Usage Examples");
+    println!("=================================\n");
+
+    // Example 1: Single rule evaluation
+    single_rule_example()?;
+    println!();
+
+    // Example 2: Multiple rules with field mapping
+    multiple_rules_example()?;
+    println!();
+
+    // Example 3: Batch processing
+    batch_processing_example()?;
+
+    Ok(())
 }
 
-#[cfg(feature = "examples")]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use sigma_engine::{Compiler, Vm};
+/// Demonstrate single rule compilation and evaluation.
+fn single_rule_example() -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== Single Rule Example ===");
 
-    println!("🚀 SIGMA Engine Basic Usage Example");
-    println!("===================================\n");
-
-    println!("📝 Step 1: Creating compiler...");
+    // Compile a SIGMA rule
     let mut compiler = Compiler::new();
-    println!("✅ Compiler created\n");
-
-    println!("📋 Step 2: Defining SIGMA rule...");
     let rule_yaml = r#"
-title: Windows Login Event Detection
-id: 12345678-1234-1234-1234-123456789012
-status: experimental
-description: Detects Windows login events
-author: SIGMA Engine Example
-date: 2025/06/15
+title: Windows Login Event
 logsource:
     category: authentication
-    product: windows
 detection:
     selection:
         EventID: 4624
         LogonType: 2
     condition: selection
-level: medium
 "#;
 
-    println!("Rule: Windows Login Event Detection");
-    println!("- EventID: 4624 (Windows Logon)");
-    println!("- LogonType: 2 (Interactive logon)\n");
-
-    println!("⚙️  Step 3: Compiling rule to bytecode...");
-    let bytecode = compiler.compile_rule(rule_yaml)?;
-
-    println!("✅ Rule compiled successfully!");
-    println!("   - Rule ID: {}", bytecode.rule_id);
+    let ruleset = compiler.compile_ruleset(&[rule_yaml])?;
     println!(
-        "   - Rule Name: {}",
-        bytecode.rule_name.as_deref().unwrap_or("Unknown")
+        "Compiled ruleset with {} primitives",
+        ruleset.primitives.len()
     );
-    println!("   - Bytecode Instructions: {}", bytecode.opcodes.len());
-    println!("   - Max Stack Depth: {}", bytecode.max_stack_depth);
-    println!("   - Primitives Discovered: {}", compiler.primitive_count());
 
-    println!("\n🔍 Discovered Primitives:");
-    for (i, primitive) in compiler.primitives().iter().enumerate() {
-        println!(
-            "   {}. Field: '{}', Match: '{}', Values: {:?}",
-            i, primitive.field, primitive.match_type, primitive.values
-        );
-    }
-    println!();
+    // Create engine
+    let mut engine = SigmaEngine::from_ruleset(ruleset)?;
 
-    println!("🖥️  Step 4: Creating virtual machine...");
-    let mut vm = Vm::<64>::new();
-    println!("✅ VM created (64-element stack)\n");
+    // Test with matching event
+    let matching_event = json!({
+        "EventID": "4624",
+        "LogonType": 2
+    });
 
-    println!("🎯 Step 5: Simulating event processing...");
+    let result = engine.evaluate(&matching_event)?;
+    println!("Matching event result: {:?}", result.matched_rules);
 
-    println!("\n📊 Scenario 1: Windows login event (should match)");
-    let primitive_results_match = vec![
-        true, // EventID = 4624 ✓
-        true, // LogonType = 2 ✓
+    // Test with non-matching event
+    let non_matching_event = json!({
+        "EventID": "4625",
+        "LogonType": 3
+    });
+
+    let result = engine.evaluate(&non_matching_event)?;
+    println!("Non-matching event result: {:?}", result.matched_rules);
+
+    Ok(())
+}
+
+/// Demonstrate multiple rules with field mapping.
+fn multiple_rules_example() -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== Multiple Rules with Field Mapping ===");
+
+    // Set up field mapping for custom taxonomy
+    let mut field_mapping = sigma_engine::FieldMapping::with_taxonomy("custom_edr".to_string());
+    field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
+    field_mapping.add_mapping("ProcessCommandLine".to_string(), "CommandLine".to_string());
+
+    let mut compiler = Compiler::with_field_mapping(field_mapping);
+
+    let rules = [
+        r#"
+title: Suspicious PowerShell
+logsource:
+    category: process_creation
+detection:
+    selection:
+        EventID: 1
+        ProcessImage|endswith: '\powershell.exe'
+        ProcessCommandLine|contains: 'Invoke-Expression'
+    condition: selection
+"#,
+        r#"
+title: Reconnaissance Tools
+logsource:
+    category: process_creation
+detection:
+    tools:
+        ProcessImage|endswith:
+            - '\whoami.exe'
+            - '\net.exe'
+    condition: tools
+"#,
     ];
 
-    println!("   Primitive Results: {:?}", primitive_results_match);
-    match vm.execute(&bytecode, &primitive_results_match)? {
-        Some(rule_id) => {
-            println!("   🎉 MATCH! Rule {} triggered", rule_id);
-            println!(
-                "   📝 Rule: {}",
-                bytecode.rule_name.as_deref().unwrap_or("Unknown")
-            );
-        }
-        None => println!("   ❌ No match"),
-    }
+    let ruleset = compiler.compile_ruleset(&rules)?;
+    println!(
+        "Compiled {} rules with {} primitives",
+        rules.len(),
+        ruleset.primitives.len()
+    );
 
-    println!("\n📊 Scenario 2: Different event (should not match)");
-    let primitive_results_no_match = vec![
-        false, // EventID ≠ 4624 ❌
-        true,  // LogonType = 2 ✓
+    let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+
+    // Test PowerShell event
+    let powershell_event = json!({
+        "EventID": 1,
+        "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "CommandLine": "powershell.exe -Command Invoke-Expression"
+    });
+
+    let result = engine.evaluate(&powershell_event)?;
+    println!("PowerShell event matches: {:?}", result.matched_rules);
+
+    // Test reconnaissance tool event
+    let recon_event = json!({
+        "EventID": 1,
+        "Image": "C:\\Windows\\System32\\whoami.exe",
+        "CommandLine": "whoami /all"
+    });
+
+    let result = engine.evaluate(&recon_event)?;
+    println!("Reconnaissance event matches: {:?}", result.matched_rules);
+
+    Ok(())
+}
+
+/// Demonstrate batch processing for high throughput.
+fn batch_processing_example() -> Result<(), Box<dyn std::error::Error>> {
+    println!("=== Batch Processing Example ===");
+
+    let mut compiler = Compiler::new();
+    let rule_yaml = r#"
+title: Windows Login Event
+logsource:
+    category: authentication
+detection:
+    selection:
+        EventID: 4624
+        LogonType: 2
+    condition: selection
+"#;
+
+    let ruleset = compiler.compile_ruleset(&[rule_yaml])?;
+    let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+
+    // Create batch of events
+    let events = [
+        json!({"EventID": "4624", "LogonType": 2}), // Match
+        json!({"EventID": "4624", "LogonType": 3}), // No match
+        json!({"EventID": "4625", "LogonType": 2}), // No match
+        json!({"EventID": "4624", "LogonType": 2}), // Match
+        json!({"EventID": "4624", "LogonType": 2}), // Match
     ];
 
-    println!("   Primitive Results: {:?}", primitive_results_no_match);
-    match vm.execute(&bytecode, &primitive_results_no_match)? {
-        Some(rule_id) => {
-            println!("   🎉 MATCH! Rule {} triggered", rule_id);
+    println!("Processing batch of {} events", events.len());
+
+    let start_time = std::time::Instant::now();
+    let results = engine.evaluate_batch(&events)?;
+    let processing_time = start_time.elapsed();
+
+    println!("Batch processing completed in {:?}", processing_time);
+
+    // Calculate total matches
+    let total_matches: usize = results.iter().map(|r| r.matched_rules.len()).sum();
+    println!("Total matches: {}", total_matches);
+    println!("Events processed: {}", events.len());
+    println!(
+        "Throughput: {:.0} events/sec",
+        events.len() as f64 / processing_time.as_secs_f64()
+    );
+
+    // Show individual results
+    for (i, result) in results.iter().enumerate() {
+        if !result.matched_rules.is_empty() {
+            println!("Event {} matched rules: {:?}", i, result.matched_rules);
         }
-        None => println!("   ❌ No match (as expected)"),
     }
-
-    println!("\n📊 Scenario 3: Wrong logon type (should not match)");
-    let primitive_results_wrong_type = vec![
-        true,  // EventID = 4624 ✓
-        false, // LogonType ≠ 2 ❌
-    ];
-
-    println!("   Primitive Results: {:?}", primitive_results_wrong_type);
-    match vm.execute(&bytecode, &primitive_results_wrong_type)? {
-        Some(rule_id) => {
-            println!("   🎉 MATCH! Rule {} triggered", rule_id);
-        }
-        None => println!("   ❌ No match (as expected)"),
-    }
-
-    println!("\n🏁 Example completed successfully!");
-    println!("\n💡 Key Takeaways:");
-    println!("   • SIGMA rules are compiled offline to efficient bytecode");
-    println!("   • The VM executes bytecode with primitive match results");
-    println!("   • Primitive matching is handled outside the VM");
-    println!("   • The same bytecode can be executed multiple times");
-    println!("   • Performance: ~4-10ns per rule execution");
 
     Ok(())
 }

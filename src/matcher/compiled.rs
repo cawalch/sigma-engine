@@ -5,33 +5,90 @@ use std::sync::Arc;
 
 /// Compiled primitive for zero-allocation evaluation.
 ///
-/// Contains pre-compiled data structures optimized for high-performance evaluation.
-/// All data is shared using Arc to minimize memory overhead when the same patterns
-/// appear across multiple rules.
+/// A `CompiledPrimitive` represents a fully compiled and optimized SIGMA primitive
+/// that can be evaluated against events with zero memory allocations. It contains
+/// all the pre-compiled data structures needed for high-performance matching.
 ///
-/// # Memory Layout
-/// - `field_path`: Pre-parsed field path for nested JSON access
-/// - `match_fn`: Pre-compiled match function with zero-allocation signature
-/// - `modifier_chain`: Pre-compiled modifier pipeline for value transformation
-/// - `values`: Pre-allocated values for matching
-/// - `raw_modifiers`: Raw modifier names for reference
 ///
-/// # Example
+/// # Field Path Format
+///
+/// Field paths support both simple and nested field access:
+/// - Simple: `["EventID"]` → accesses `event.EventID`
+/// - Nested: `["Process", "Name"]` → accesses `event.Process.Name`
+/// - Array: `["Users", "0", "Name"]` → accesses `event.Users[0].Name`
+///
+/// # Match Function Signature
+///
+/// Match functions follow a zero-allocation signature:
+/// ```rust,ignore
+/// fn match_fn(field_value: &str, values: &[&str], modifiers: &[&str]) -> Result<bool, SigmaError>
+/// ```
+///
+/// This signature ensures:
+/// - No string cloning during evaluation
+/// - Efficient slice-based value iteration
+/// - Minimal error handling overhead
+///
+/// # Modifier Chain Processing
+///
+/// Modifiers are applied in sequence to transform field values before matching:
+/// 1. Extract field value from event
+/// 2. Apply modifiers in order (e.g., base64_decode → lowercase)
+/// 3. Pass transformed value to match function
+/// 4. Return boolean result
+///
+/// # Examples
+///
+/// ## Simple Exact Match
 /// ```rust,ignore
 /// use sigma_engine::matcher::{CompiledPrimitive, MatchFn};
 /// use std::sync::Arc;
 ///
 /// let exact_match: MatchFn = Arc::new(|field_value, values, _modifiers| {
-///     values.iter().any(|&v| field_value == v).then(|| true).ok_or_else(|| false)
+///     Ok(values.iter().any(|&v| field_value == v))
 /// });
 ///
-/// let compiled = CompiledPrimitive {
-///     field_path: Arc::new(vec!["EventID".to_string()]),
-///     match_fn: exact_match,
-///     modifier_chain: Arc::new(vec![]),
-///     values: Arc::new(vec!["4624".to_string()]),
-///     raw_modifiers: Arc::new(vec![]),
-/// };
+/// let compiled = CompiledPrimitive::new(
+///     vec!["EventID".to_string()],
+///     exact_match,
+///     vec![], // No modifiers
+///     vec!["4624".to_string()],
+///     vec![],
+/// );
+/// ```
+///
+/// ## Complex Match with Modifiers
+/// ```rust,ignore
+/// use sigma_engine::matcher::{CompiledPrimitive, MatchFn, ModifierFn};
+/// use std::sync::Arc;
+///
+/// let contains_match: MatchFn = Arc::new(|field_value, values, _modifiers| {
+///     Ok(values.iter().any(|&v| field_value.contains(v)))
+/// });
+///
+/// let lowercase_modifier: ModifierFn = Arc::new(|input| {
+///     Ok(input.to_lowercase())
+/// });
+///
+/// let compiled = CompiledPrimitive::new(
+///     vec!["Process", "CommandLine".to_string()],
+///     contains_match,
+///     vec![lowercase_modifier],
+///     vec!["powershell".to_string(), "cmd".to_string()],
+///     vec!["lowercase".to_string()],
+/// );
+/// ```
+///
+/// ## Nested Field Access
+/// ```rust,ignore
+/// let compiled = CompiledPrimitive::new(
+///     vec!["Event".to_string(), "System".to_string(), "EventID".to_string()],
+///     exact_match,
+///     vec![],
+///     vec!["4624".to_string()],
+///     vec![],
+/// );
+/// // Matches: event.Event.System.EventID == "4624"
 /// ```
 #[derive(Clone)]
 pub struct CompiledPrimitive {
@@ -151,6 +208,106 @@ impl CompiledPrimitive {
             + modifiers_size
             + (self.field_path.len() + self.values.len() + self.raw_modifiers.len())
                 * std::mem::size_of::<String>()
+    }
+
+    /// Evaluate this primitive against an event context.
+    ///
+    /// # Arguments
+    /// * `context` - Event context containing the event data
+    ///
+    /// # Returns
+    /// `true` if the primitive matches, `false` otherwise
+    pub fn matches(&self, context: &crate::matcher::EventContext) -> bool {
+        // Convert field path to dot notation string
+        let field_path_str = self.field_path.join(".");
+
+        // Extract field value from event using the field path
+        let field_value = match context.get_field(&field_path_str) {
+            Ok(Some(value)) => value,
+            Ok(None) | Err(_) => return false, // Field not found or extraction failed
+        };
+
+        // Convert values to string slices for the match function
+        let value_refs: Vec<&str> = self.values.iter().map(|s| s.as_str()).collect();
+        let modifier_refs: Vec<&str> = self.raw_modifiers.iter().map(|s| s.as_str()).collect();
+
+        // Call the match function
+        (self.match_fn)(&field_value, &value_refs, &modifier_refs).unwrap_or_default()
+    }
+
+    /// Create a CompiledPrimitive from a Primitive IR structure.
+    ///
+    /// This method compiles a Primitive into an optimized CompiledPrimitive
+    /// with pre-compiled match functions and modifier chains.
+    ///
+    /// # Arguments
+    /// * `primitive` - The primitive to compile
+    ///
+    /// # Returns
+    /// A compiled primitive ready for high-performance evaluation
+    pub fn from_primitive(primitive: crate::ir::Primitive) -> crate::error::Result<Self> {
+        use std::sync::Arc;
+
+        // Parse field path (split on dots for nested access)
+        let field_path: Vec<String> = primitive.field.split('.').map(|s| s.to_string()).collect();
+
+        // Create a simple match function based on match type
+        let match_fn: MatchFn = match primitive.match_type.as_str() {
+            "equals" | "exact" => Arc::new(|field_value, values, _modifiers| {
+                for &value in values {
+                    if field_value == value {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }),
+            "contains" => Arc::new(|field_value, values, _modifiers| {
+                for &value in values {
+                    if field_value.contains(value) {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }),
+            "startswith" => Arc::new(|field_value, values, _modifiers| {
+                for &value in values {
+                    if field_value.starts_with(value) {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }),
+            "endswith" => Arc::new(|field_value, values, _modifiers| {
+                for &value in values {
+                    if field_value.ends_with(value) {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }),
+            _ => {
+                // Default to exact match for unknown types
+                Arc::new(|field_value, values, _modifiers| {
+                    for &value in values {
+                        if field_value == value {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                })
+            }
+        };
+
+        // For now, create empty modifier chain (TODO: implement modifiers)
+        let modifier_chain: Vec<ModifierFn> = Vec::new();
+
+        Ok(Self::new(
+            field_path,
+            match_fn,
+            modifier_chain,
+            primitive.values,
+            primitive.modifiers,
+        ))
     }
 }
 

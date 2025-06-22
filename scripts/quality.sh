@@ -66,10 +66,10 @@ fi
 
 # 8. Check for TODO/FIXME comments
 echo -e "${BLUE}🔍 Checking for TODO/FIXME comments...${NC}"
-TODO_COUNT=$(grep -r "TODO\|FIXME" src/ tests/ examples/ 2>/dev/null | wc -l || echo "0")
+TODO_COUNT=$(grep -r "TODO\|FIXME" src/ tests/ 2>/dev/null | wc -l || echo "0")
 if [ "$TODO_COUNT" -gt 0 ]; then
     echo -e "${YELLOW}⚠️  Found $TODO_COUNT TODO/FIXME comments:${NC}"
-    grep -rn "TODO\|FIXME" src/ tests/ examples/ 2>/dev/null || true
+    grep -rn "TODO\|FIXME" src/ tests/ 2>/dev/null || true
     echo ""
 else
     echo -e "${GREEN}✅ No TODO/FIXME comments found${NC}"

@@ -1,314 +1,253 @@
-//! End-to-end benchmarks for the SIGMA bytecode engine.
+//! End-to-end benchmarks for SIGMA Engine
 //!
-//! These benchmarks measure the complete pipeline from JSON parsing
-//! through primitive matching to VM execution, providing realistic
-//! performance metrics for production use.
+//! These benchmarks test the complete pipeline from YAML rule compilation
+//! to event evaluation, measuring real-world performance scenarios.
 
-use aho_corasick::AhoCorasick;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use regex::Regex;
-use serde_json::Value;
-use sigma_engine::{Compiler, Primitive, Vm};
-use std::collections::HashMap;
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use serde_json::json;
+use sigma_engine::{Compiler, SigmaEngine};
 
-/// Simplified primitive matcher for benchmarking
-struct BenchPrimitiveMatcher {
-    primitive_strategies: HashMap<u32, BenchMatchStrategy>,
-    aho_corasick: Option<AhoCorasick>,
-    ac_pattern_to_primitive: HashMap<usize, u32>,
-    #[allow(dead_code)]
-    regex_patterns: Vec<(u32, Regex)>,
-}
-
-#[derive(Debug, Clone)]
-enum BenchMatchStrategy {
-    ExactMatch {
-        field: String,
-        #[allow(dead_code)]
-        ac_pattern_id: usize,
-    },
-    ContainsMatch {
-        field: String,
-        #[allow(dead_code)]
-        ac_pattern_id: usize,
-    },
-    #[allow(dead_code)]
-    RegexMatch {
-        field: String,
-        regex_id: usize,
-    },
-    Equals {
-        field: String,
-        value: String,
-    },
-}
-
-impl BenchPrimitiveMatcher {
-    fn new(primitives: &[Primitive]) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut primitive_strategies = HashMap::new();
-        let mut ac_patterns = Vec::new();
-        let mut ac_pattern_to_primitive = HashMap::new();
-        let regex_patterns = Vec::new();
-
-        for (primitive_id, primitive) in primitives.iter().enumerate() {
-            let primitive_id = primitive_id as u32;
-
-            match primitive.match_type.as_ref() {
-                "equals" => {
-                    if primitive.values.len() == 1 {
-                        let pattern_id = ac_patterns.len();
-                        ac_patterns.push(primitive.values[0].as_ref());
-                        ac_pattern_to_primitive.insert(pattern_id, primitive_id);
-
-                        primitive_strategies.insert(
-                            primitive_id,
-                            BenchMatchStrategy::ExactMatch {
-                                field: primitive.field.to_string(),
-                                ac_pattern_id: pattern_id,
-                            },
-                        );
-                    } else {
-                        primitive_strategies.insert(
-                            primitive_id,
-                            BenchMatchStrategy::Equals {
-                                field: primitive.field.to_string(),
-                                value: primitive
-                                    .values
-                                    .first()
-                                    .map(|v| v.to_string())
-                                    .unwrap_or_default(),
-                            },
-                        );
-                    }
-                }
-                "contains" => {
-                    if !primitive.values.is_empty() {
-                        let pattern_id = ac_patterns.len();
-                        ac_patterns.push(primitive.values[0].as_ref());
-                        ac_pattern_to_primitive.insert(pattern_id, primitive_id);
-
-                        primitive_strategies.insert(
-                            primitive_id,
-                            BenchMatchStrategy::ContainsMatch {
-                                field: primitive.field.to_string(),
-                                ac_pattern_id: pattern_id,
-                            },
-                        );
-                    }
-                }
-                _ => {
-                    primitive_strategies.insert(
-                        primitive_id,
-                        BenchMatchStrategy::Equals {
-                            field: primitive.field.to_string(),
-                            value: primitive
-                                .values
-                                .first()
-                                .map(|v| v.to_string())
-                                .unwrap_or_default(),
-                        },
-                    );
-                }
-            }
-        }
-
-        let aho_corasick = if !ac_patterns.is_empty() {
-            Some(AhoCorasick::new(&ac_patterns)?)
-        } else {
-            None
-        };
-
-        Ok(Self {
-            primitive_strategies,
-            aho_corasick,
-            ac_pattern_to_primitive,
-            regex_patterns,
-        })
-    }
-
-    fn evaluate_primitives(&self, event: &Value, primitive_count: usize) -> Vec<bool> {
-        let mut results = vec![false; primitive_count];
-
-        // Process AhoCorasick matches
-        if let Some(ref ac) = self.aho_corasick {
-            for (primitive_id, strategy) in &self.primitive_strategies {
-                match strategy {
-                    BenchMatchStrategy::ExactMatch {
-                        field,
-                        ac_pattern_id: _,
-                    }
-                    | BenchMatchStrategy::ContainsMatch {
-                        field,
-                        ac_pattern_id: _,
-                    } => {
-                        if let Some(field_value) = self.extract_field_value(event, field) {
-                            let matches = ac.find_iter(&field_value).any(|m| {
-                                self.ac_pattern_to_primitive.get(&m.pattern().as_usize())
-                                    == Some(primitive_id)
-                            });
-
-                            if matches {
-                                let idx = *primitive_id as usize;
-                                if idx < results.len() {
-                                    results[idx] = match strategy {
-                                        BenchMatchStrategy::ExactMatch { .. } => {
-                                            ac.find(&field_value).is_some_and(|m| {
-                                                m.start() == 0 && m.end() == field_value.len()
-                                            })
-                                        }
-                                        BenchMatchStrategy::ContainsMatch { .. } => true,
-                                        _ => false,
-                                    };
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Process simple equality matches
-        for (primitive_id, strategy) in &self.primitive_strategies {
-            if let BenchMatchStrategy::Equals { field, value } = strategy {
-                if let Some(field_value) = self.extract_field_value(event, field) {
-                    if field_value == *value {
-                        let idx = *primitive_id as usize;
-                        if idx < results.len() {
-                            results[idx] = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        results
-    }
-
-    fn extract_field_value(&self, event: &Value, field: &str) -> Option<String> {
-        match event.get(field) {
-            Some(Value::String(s)) => Some(s.clone()),
-            Some(Value::Number(n)) => Some(n.to_string()),
-            Some(Value::Bool(b)) => Some(b.to_string()),
-            _ => None,
-        }
-    }
-}
-
-fn setup_test_environment() -> (
-    Vec<sigma_engine::ir::BytecodeChunk>,
-    BenchPrimitiveMatcher,
-    Vm<64>,
-    usize,
-) {
-    let mut compiler = Compiler::new();
-
-    // Create a simple test rule
+/// Benchmark single event evaluation through the complete pipeline
+fn bench_end_to_end_single_event(c: &mut Criterion) {
+    // Realistic SIGMA rule based on emerging threats patterns
     let rule_yaml = r#"
-title: Test Login Event
+title: Suspicious PowerShell Execution with Base64 Encoding
+id: 12345678-1234-1234-1234-123456789012
+status: experimental
+description: Detects suspicious PowerShell execution with base64 encoded commands
+references:
+    - https://github.com/SigmaHQ/sigma/tree/master/rules-emerging-threats
+author: SIGMA Engine Benchmark
+date: 2025/01/01
+tags:
+    - attack.execution
+    - attack.t1059.001
 logsource:
-    category: authentication
+    product: windows
+    service: powershell
+    definition: PowerShell Script Block Logging
 detection:
-    selection:
-        EventID: 4624
-    condition: selection
+    selection_powershell:
+        EventID: 4104
+    selection_base64:
+        ScriptBlockText|contains:
+            - 'FromBase64String'
+            - 'ToBase64String'
+            - '-EncodedCommand'
+            - '-enc '
+    selection_suspicious:
+        ScriptBlockText|contains:
+            - 'DownloadString'
+            - 'WebClient'
+            - 'Invoke-Expression'
+            - 'IEX'
+    condition: selection_powershell and (selection_base64 and selection_suspicious)
+falsepositives:
+    - Legitimate PowerShell scripts using base64 encoding
+level: medium
 "#;
 
-    let chunk = compiler
-        .compile_rule(rule_yaml)
-        .expect("Failed to compile test rule");
-    let chunks = vec![chunk];
-    let ruleset = compiler.into_ruleset(chunks.clone());
+    let mut compiler = Compiler::new();
+    let ruleset = compiler.compile_ruleset(&[rule_yaml]).unwrap();
+    let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
 
-    let matcher = BenchPrimitiveMatcher::new(&ruleset.primitives)
-        .expect("Failed to create primitive matcher");
-
-    let vm = Vm::<64>::new();
-
-    (chunks, matcher, vm, ruleset.primitive_count())
-}
-
-fn bench_end_to_end_single_event(c: &mut Criterion) {
-    let (chunks, matcher, mut vm, primitive_count) = setup_test_environment();
-
-    let test_event = r#"{"EventID": "4624", "LogonType": "2", "TargetUserName": "admin"}"#;
-    let parsed_event: Value = serde_json::from_str(test_event).unwrap();
+    let test_event = json!({
+        "EventID": "4104",
+        "ScriptBlockText": "powershell.exe -EncodedCommand SQBuAHYAbwBrAGUALQBXAGUAYgBSAGUAcQB1AGUAcwB0AA==",
+        "ProcessName": "powershell.exe",
+        "User": "DOMAIN\\user",
+        "Computer": "WORKSTATION01"
+    });
 
     c.bench_function("end_to_end_single_event", |b| {
         b.iter(|| {
-            // Parse JSON (in real scenario this would be done once per event)
-            let event = black_box(&parsed_event);
-
-            // Evaluate primitives
-            let primitive_results = matcher.evaluate_primitives(event, primitive_count);
-
-            // Execute VM for each rule
-            for chunk in &chunks {
-                let _result = vm.execute(chunk, &primitive_results);
-            }
+            let result = engine.evaluate(black_box(&test_event));
+            black_box(result)
         })
     });
 }
 
+/// Benchmark batch event processing
 fn bench_end_to_end_batch_events(c: &mut Criterion) {
-    let (chunks, matcher, mut vm, primitive_count) = setup_test_environment();
-
-    let test_events = [
-        r#"{"EventID": "4624", "LogonType": "2", "TargetUserName": "admin"}"#,
-        r#"{"EventID": "4625", "LogonType": "2", "TargetUserName": "user"}"#,
-        r#"{"EventID": "4624", "LogonType": "3", "TargetUserName": "service"}"#,
-        r#"{"ProcessName": "cmd.exe", "CommandLine": "whoami"}"#,
+    // Multiple realistic SIGMA rules for batch processing
+    let rules = vec![
+        r#"
+title: Suspicious Process Creation
+id: 11111111-1111-1111-1111-111111111111
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection:
+        EventID: 4688
+        NewProcessName|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\wscript.exe'
+    condition: selection
+level: low
+"#,
+        r#"
+title: Network Connection to Suspicious Domain
+id: 22222222-2222-2222-2222-222222222222
+logsource:
+    product: windows
+    service: sysmon
+detection:
+    selection:
+        EventID: 3
+        DestinationHostname|contains:
+            - 'malware.com'
+            - 'evil.org'
+            - 'badactor.net'
+    condition: selection
+level: high
+"#,
+        r#"
+title: File Creation in System Directory
+id: 33333333-3333-3333-3333-333333333333
+logsource:
+    product: windows
+    service: sysmon
+detection:
+    selection:
+        EventID: 11
+        TargetFilename|startswith:
+            - 'C:\Windows\System32\'
+            - 'C:\Windows\SysWOW64\'
+    condition: selection
+level: medium
+"#,
     ];
 
-    let parsed_events: Vec<Value> = test_events
-        .iter()
-        .map(|e| serde_json::from_str(e).unwrap())
+    let mut compiler = Compiler::new();
+    let ruleset = compiler.compile_ruleset(&rules).unwrap();
+    let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+
+    // Create test events manually
+    let test_events: Vec<serde_json::Value> = (0..100)
+        .map(|i| {
+            json!({
+                "EventID": "4688",
+                "NewProcessName": format!("C:\\Windows\\System32\\process{}.exe", i),
+                "ProcessId": format!("{}", 1000 + i),
+                "User": "DOMAIN\\user",
+                "Computer": "WORKSTATION01"
+            })
+        })
         .collect();
 
-    for batch_size in [1, 10, 100, 1000].iter() {
-        c.bench_with_input(
-            BenchmarkId::new("end_to_end_batch", batch_size),
-            batch_size,
-            |b, &batch_size| {
-                b.iter(|| {
-                    for i in 0..batch_size {
-                        let event = &parsed_events[i % parsed_events.len()];
-
-                        // Evaluate primitives
-                        let primitive_results = matcher.evaluate_primitives(event, primitive_count);
-
-                        // Execute VM for each rule
-                        for chunk in &chunks {
-                            let _result = vm.execute(chunk, &primitive_results);
-                        }
-                    }
-                })
-            },
-        );
-    }
-}
-
-fn bench_primitive_matching_only(c: &mut Criterion) {
-    let (_, matcher, _, primitive_count) = setup_test_environment();
-
-    let test_event = r#"{"EventID": "4624", "LogonType": "2", "TargetUserName": "admin"}"#;
-    let parsed_event: Value = serde_json::from_str(test_event).unwrap();
-
-    c.bench_function("primitive_matching_only", |b| {
+    c.bench_function("end_to_end_batch_100_events", |b| {
         b.iter(|| {
-            let event = black_box(&parsed_event);
-            let _results = matcher.evaluate_primitives(event, primitive_count);
+            let results = engine.evaluate_batch(black_box(&test_events));
+            black_box(results)
         })
     });
 }
 
-fn bench_json_parsing_only(c: &mut Criterion) {
-    let test_event = r#"{"EventID": "4624", "LogonType": "2", "TargetUserName": "admin"}"#;
+/// Benchmark compilation performance
+fn bench_compilation_performance(c: &mut Criterion) {
+    let rule_yaml = r#"
+title: Test Rule
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4624
+        LogonType: 2
+    condition: selection
+"#;
 
-    c.bench_function("json_parsing_only", |b| {
+    c.bench_function("compilation_single_rule", |b| {
         b.iter(|| {
-            let event_str = black_box(test_event);
-            let _parsed: Value = serde_json::from_str(event_str).unwrap();
+            let mut compiler = Compiler::new();
+            let ruleset = compiler.compile_ruleset(black_box(&[rule_yaml]));
+            black_box(ruleset)
+        })
+    });
+}
+
+/// Benchmark multiple rules compilation
+fn bench_multiple_rules_compilation(c: &mut Criterion) {
+    // Realistic emerging threat rules based on SigmaHQ patterns
+    let rules = vec![
+        r#"
+title: Suspicious Registry Modification
+id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+logsource:
+    product: windows
+    service: sysmon
+detection:
+    selection:
+        EventID: 13
+        TargetObject|contains:
+            - '\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+            - '\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+    condition: selection
+level: medium
+"#,
+        r#"
+title: Credential Dumping Tool Execution
+id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection:
+        EventID: 4688
+        NewProcessName|endswith:
+            - '\mimikatz.exe'
+            - '\procdump.exe'
+            - '\lsass.exe'
+    condition: selection
+level: critical
+"#,
+        r#"
+title: Lateral Movement via WMI
+id: cccccccc-cccc-cccc-cccc-cccccccccccc
+logsource:
+    product: windows
+    service: wmi
+detection:
+    selection:
+        EventID: 5857
+        Operation: 'Started'
+    condition: selection
+level: high
+"#,
+    ];
+
+    c.bench_function("compilation_multiple_rules", |b| {
+        b.iter(|| {
+            let mut compiler = Compiler::new();
+            let ruleset = compiler.compile_ruleset(black_box(&rules));
+            black_box(ruleset)
+        })
+    });
+}
+
+/// Benchmark engine creation from ruleset
+fn bench_engine_creation(c: &mut Criterion) {
+    let rule_yaml = r#"
+title: Test Rule
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4624
+        LogonType: 2
+    condition: selection
+"#;
+
+    let mut compiler = Compiler::new();
+    let ruleset = compiler.compile_ruleset(&[rule_yaml]).unwrap();
+
+    c.bench_function("engine_creation", |b| {
+        b.iter(|| {
+            let engine = SigmaEngine::from_ruleset(black_box(ruleset.clone()));
+            black_box(engine)
         })
     });
 }
@@ -317,7 +256,8 @@ criterion_group!(
     benches,
     bench_end_to_end_single_event,
     bench_end_to_end_batch_events,
-    bench_primitive_matching_only,
-    bench_json_parsing_only
+    bench_compilation_performance,
+    bench_multiple_rules_compilation,
+    bench_engine_creation
 );
 criterion_main!(benches);
