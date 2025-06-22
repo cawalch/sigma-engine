@@ -33,7 +33,6 @@ anyhow = "1.0"
 thiserror = "1.0"
 
 # Core dependencies for performance
-string_cache = "0.8"
 
 # Core dependencies for matching capabilities
 regex = "1.10"
