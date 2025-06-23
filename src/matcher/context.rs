@@ -84,7 +84,6 @@ use std::collections::HashMap;
 /// The context is designed for efficient memory usage:
 /// - **Borrowed data**: Holds only a reference to the original event
 /// - **Selective caching**: Only caches accessed fields
-/// - **String interning**: Can be combined with string interning for further optimization
 /// - **Bounded growth**: Cache size is limited by the number of unique field accesses
 ///
 /// # Thread Safety

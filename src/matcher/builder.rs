@@ -415,7 +415,7 @@ impl MatcherBuilder {
             // In production, this might be configurable behavior
         }
 
-        // Pre-allocate values and modifiers - use interned strings directly for efficiency
+        // Pre-allocate values and modifiers for efficiency
         let values: Vec<String> = primitive
             .values
             .iter()
