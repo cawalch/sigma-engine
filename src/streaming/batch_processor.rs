@@ -20,8 +20,6 @@ pub struct BatchProcessorConfig {
     pub enable_optimization: bool,
     /// Maximum processing time per batch
     pub max_processing_time: Duration,
-    /// Enable result caching
-    pub enable_caching: bool,
     /// Batch timeout for partial processing
     pub batch_timeout: Duration,
 }
@@ -34,7 +32,6 @@ impl BatchProcessorConfig {
             worker_threads: num_cpus::get(),
             enable_optimization: true,
             max_processing_time: Duration::from_millis(1000),
-            enable_caching: true,
             batch_timeout: Duration::from_millis(500),
         }
     }
@@ -46,7 +43,6 @@ impl BatchProcessorConfig {
             worker_threads: 1,
             enable_optimization: false,
             max_processing_time: Duration::from_millis(50),
-            enable_caching: false,
             batch_timeout: Duration::from_millis(10),
         }
     }
@@ -58,7 +54,6 @@ impl BatchProcessorConfig {
             worker_threads: (num_cpus::get() / 2).max(1),
             enable_optimization: true,
             max_processing_time: Duration::from_millis(200),
-            enable_caching: true,
             batch_timeout: Duration::from_millis(100),
         }
     }
@@ -315,7 +310,7 @@ mod tests {
 
     fn create_test_dag_engine() -> DagEngine {
         let ruleset = CompiledRuleset::new();
-        DagEngine::from_ruleset(ruleset).unwrap()
+        DagEngine::from_ruleset_with_config(ruleset, crate::DagEngineConfig::default()).unwrap()
     }
 
     #[test]

@@ -244,6 +244,10 @@ impl BatchDagEvaluator {
                             self.total_nodes_evaluated += 1;
                         }
                     }
+                    NodeType::Prefilter { .. } => {
+                        // Skip prefilter nodes in batch evaluation - they're handled separately
+                        continue;
+                    }
                 }
             }
         }

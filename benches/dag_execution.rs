@@ -5,7 +5,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::json;
-use sigma_engine::{Compiler, SigmaEngine};
+use sigma_engine::{Compiler, DagEngineConfig, SigmaEngine};
 
 /// Benchmark DAG engine execution through SigmaEngine
 fn bench_dag_execution(c: &mut Criterion) {
@@ -29,7 +29,8 @@ level: high
 
     let mut compiler = Compiler::new();
     let ruleset = compiler.compile_ruleset(&[rule_yaml]).unwrap();
-    let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+    let mut engine =
+        SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
 
     let test_event = json!({
         "EventID": "4104",
@@ -66,7 +67,8 @@ level: medium
 
     let mut compiler = Compiler::new();
     let ruleset = compiler.compile_ruleset(&[rule_yaml]).unwrap();
-    let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+    let mut engine =
+        SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
 
     let test_event = json!({
         "EventID": "11",
@@ -136,7 +138,8 @@ detection:
     for optimization in ["basic", "advanced"].iter() {
         let mut compiler = Compiler::new();
         let ruleset = compiler.compile_ruleset(&rules).unwrap();
-        let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+        let mut engine =
+            SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("optimization", optimization),
@@ -205,7 +208,8 @@ detection:
 
     let mut compiler = Compiler::new();
     let ruleset = compiler.compile_ruleset(&shared_rules).unwrap();
-    let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+    let mut engine =
+        SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
 
     group.bench_function("shared_primitives", |b| {
         b.iter(|| {

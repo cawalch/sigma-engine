@@ -67,12 +67,15 @@ use std::collections::HashMap;
 /// let mut compiler = Compiler::new();
 /// assert_eq!(compiler.primitive_count(), 0);
 /// ```
+#[derive(Debug)]
 pub struct Compiler {
     primitive_map: HashMap<Primitive, PrimitiveId>,
     primitives: Vec<Primitive>,
     next_primitive_id: PrimitiveId,
     current_selection_map: HashMap<String, Vec<PrimitiveId>>,
     field_mapping: FieldMapping,
+    next_rule_id: RuleId,
+    rule_id_map: HashMap<String, RuleId>,
 }
 
 impl Compiler {
@@ -93,6 +96,8 @@ impl Compiler {
             next_primitive_id: 0,
             current_selection_map: HashMap::new(),
             field_mapping: FieldMapping::new(),
+            next_rule_id: 0,
+            rule_id_map: HashMap::new(),
         }
     }
 
@@ -114,6 +119,8 @@ impl Compiler {
             next_primitive_id: 0,
             current_selection_map: HashMap::new(),
             field_mapping,
+            next_rule_id: 0,
+            rule_id_map: HashMap::new(),
         }
     }
 
@@ -507,20 +514,35 @@ impl Compiler {
         self.primitives.len()
     }
 
-    fn extract_rule_id_from_yaml(&self, yaml_doc: &Value) -> RuleId {
-        yaml_doc
-            .get("id")
-            .and_then(|v| {
-                // Try as number first, then as string
-                if let Some(n) = v.as_u64() {
-                    Some(n as RuleId)
-                } else if let Some(s) = v.as_str() {
-                    s.parse::<RuleId>().ok()
-                } else {
-                    None
+    fn extract_rule_id_from_yaml(&mut self, yaml_doc: &Value) -> RuleId {
+        if let Some(id_value) = yaml_doc.get("id") {
+            // Try as number first
+            if let Some(n) = id_value.as_u64() {
+                return n as RuleId;
+            }
+
+            // Try as string that can be parsed as number
+            if let Some(s) = id_value.as_str() {
+                if let Ok(n) = s.parse::<RuleId>() {
+                    return n;
                 }
-            })
-            .unwrap_or(0)
+
+                // String ID that can't be parsed as number - assign unique sequential ID
+                if let Some(&existing_id) = self.rule_id_map.get(s) {
+                    return existing_id;
+                } else {
+                    let new_id = self.next_rule_id;
+                    self.next_rule_id += 1;
+                    self.rule_id_map.insert(s.to_string(), new_id);
+                    return new_id;
+                }
+            }
+        }
+
+        // No ID or invalid format - assign sequential ID
+        let new_id = self.next_rule_id;
+        self.next_rule_id += 1;
+        new_id
     }
 
     fn parse_detection_from_yaml(&mut self, yaml_doc: &Value) -> Result<()> {
@@ -880,9 +902,9 @@ detection:
 
     #[test]
     fn test_extract_rule_id_from_yaml() {
-        let compiler = Compiler::new();
+        let mut compiler = Compiler::new();
 
-        // Test with valid ID
+        // Test with valid numeric ID
         let yaml_str = r#"
         id: 12345
         title: Test Rule
@@ -891,22 +913,26 @@ detection:
         let rule_id = compiler.extract_rule_id_from_yaml(&yaml_doc);
         assert_eq!(rule_id, 12345);
 
-        // Test with no ID
+        // Test with no ID - should get sequential ID
         let yaml_str = r#"
         title: Test Rule
         "#;
         let yaml_doc: Value = serde_yaml::from_str(yaml_str).unwrap();
         let rule_id = compiler.extract_rule_id_from_yaml(&yaml_doc);
-        assert_eq!(rule_id, 0);
+        assert_eq!(rule_id, 0); // First sequential ID
 
-        // Test with invalid ID
+        // Test with string ID that can't be parsed as number - should get sequential ID
         let yaml_str = r#"
-        id: "not_a_number"
+        id: "rule-001"
         title: Test Rule
         "#;
         let yaml_doc: Value = serde_yaml::from_str(yaml_str).unwrap();
         let rule_id = compiler.extract_rule_id_from_yaml(&yaml_doc);
-        assert_eq!(rule_id, 0);
+        assert_eq!(rule_id, 1); // Next sequential ID
+
+        // Test same string ID again - should get same ID
+        let rule_id2 = compiler.extract_rule_id_from_yaml(&yaml_doc);
+        assert_eq!(rule_id2, 1); // Same ID as before
     }
 
     #[test]
@@ -1016,7 +1042,9 @@ detection:
         let ruleset = compiler.into_ruleset();
 
         // Create a DAG engine and test execution
-        let mut engine = DagEngine::from_ruleset(ruleset).unwrap();
+        let mut engine =
+            DagEngine::from_ruleset_with_config(ruleset, crate::DagEngineConfig::default())
+                .unwrap();
 
         // Test with matching event
         let matching_event = json!({

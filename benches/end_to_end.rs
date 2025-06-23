@@ -5,7 +5,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use serde_json::json;
-use sigma_engine::{Compiler, SigmaEngine};
+use sigma_engine::{Compiler, DagEngineConfig, SigmaEngine};
 
 /// Benchmark single event evaluation through the complete pipeline
 fn bench_end_to_end_single_event(c: &mut Criterion) {
@@ -49,7 +49,8 @@ level: medium
 
     let mut compiler = Compiler::new();
     let ruleset = compiler.compile_ruleset(&[rule_yaml]).unwrap();
-    let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+    let mut engine =
+        SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
 
     let test_event = json!({
         "EventID": "4104",
@@ -122,7 +123,8 @@ level: medium
 
     let mut compiler = Compiler::new();
     let ruleset = compiler.compile_ruleset(&rules).unwrap();
-    let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+    let mut engine =
+        SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
 
     // Create test events manually
     let test_events: Vec<serde_json::Value> = (0..100)
@@ -246,7 +248,10 @@ detection:
 
     c.bench_function("engine_creation", |b| {
         b.iter(|| {
-            let engine = SigmaEngine::from_ruleset(black_box(ruleset.clone()));
+            let engine = SigmaEngine::from_ruleset_with_config(
+                black_box(ruleset.clone()),
+                DagEngineConfig::default(),
+            );
             black_box(engine)
         })
     });

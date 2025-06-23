@@ -26,6 +26,15 @@ pub enum NodeType {
 
     /// Terminal node that aggregates results for a specific rule.
     Result { rule_id: RuleId },
+
+    /// Prefilter node that uses AhoCorasick to quickly eliminate non-matching events.
+    /// This node is evaluated first and can short-circuit entire rule evaluation.
+    Prefilter {
+        /// Unique identifier for this prefilter
+        prefilter_id: u32,
+        /// Number of patterns in the AhoCorasick automaton
+        pattern_count: usize,
+    },
 }
 
 /// A node in the DAG execution graph.
@@ -237,6 +246,10 @@ impl DagStatistics {
                 NodeType::Primitive { .. } => primitive_nodes += 1,
                 NodeType::Logical { .. } => logical_nodes += 1,
                 NodeType::Result { .. } => result_nodes += 1,
+                NodeType::Prefilter { .. } => {
+                    // Count prefilter as a special type of primitive
+                    primitive_nodes += 1;
+                }
             }
             total_dependencies += node.dependencies.len();
         }
@@ -420,6 +433,23 @@ mod tests {
         assert_ne!(primitive1, logical1);
         assert_ne!(logical1, result1);
         assert_ne!(primitive1, result1);
+
+        let prefilter1 = NodeType::Prefilter {
+            prefilter_id: 1,
+            pattern_count: 5,
+        };
+        let prefilter2 = NodeType::Prefilter {
+            prefilter_id: 1,
+            pattern_count: 5,
+        };
+        let prefilter3 = NodeType::Prefilter {
+            prefilter_id: 2,
+            pattern_count: 5,
+        };
+
+        assert_eq!(prefilter1, prefilter2);
+        assert_ne!(prefilter1, prefilter3);
+        assert_ne!(prefilter1, primitive1);
     }
 
     #[test]

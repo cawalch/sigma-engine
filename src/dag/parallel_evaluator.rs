@@ -170,6 +170,7 @@ impl ParallelDagEvaluator {
                         NodeType::Logical { .. } => complexity += 2.0,
                         NodeType::Primitive { .. } => complexity += 1.0,
                         NodeType::Result { .. } => complexity += 0.5,
+                        NodeType::Prefilter { .. } => complexity += 0.1, // Very fast
                     }
                 }
             }
@@ -351,6 +352,10 @@ impl ParallelDagEvaluator {
                 } else {
                     false
                 }
+            }
+            NodeType::Prefilter { .. } => {
+                // Prefilter nodes are handled separately and always pass
+                true
             }
         };
 

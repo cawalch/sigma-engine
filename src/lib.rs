@@ -104,7 +104,7 @@ pub mod streaming;
 pub mod profiling;
 
 // Primary engine interface
-pub use engine::{EngineResult, SigmaEngine};
+pub use engine::{EngineResult, SigmaEngine, SigmaEngineBuilder};
 
 // Compiler and configuration
 pub use compiler::{Compiler, FieldMapping};
