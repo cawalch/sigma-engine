@@ -2,31 +2,27 @@
 
 [![CI](https://github.com/cawalch/sigma-engine/workflows/CI/badge.svg)](https://github.com/cawalch/sigma-engine/actions)
 
-A high-performance Rust library for compiling and executing [SIGMA detection rules](https://github.com/SigmaHQ/sigma) using a DAG-based execution engine with shared computation optimization.
+A high-performance Rust library for compiling and executing [SIGMA detection rules](https://github.com/SigmaHQ/sigma) using a DAG-based execution engine with shared computation optimization and AhoCorasick prefiltering.
 
 ## Architecture
 
-SIGMA Engine uses a **pure DAG architecture** optimized for high-performance event processing:
+SIGMA Engine uses a **pure DAG architecture** with **literal prefiltering** optimized for high-performance event processing:
 
 ### Phase 1: YAML Rules → DAG (Compilation)
 
-Parse SIGMA YAML rules and compile them directly into an optimized DAG structure with shared primitive nodes.
+Parse SIGMA YAML rules and compile them directly into an optimized DAG structure with shared primitive nodes and optional AhoCorasick prefilter.
 
 ### Phase 2: DAG Execution (Runtime)
 
-Process events directly as `serde_json::Value` with zero-copy patterns and shared computation across rules.
+Process events directly as `serde_json::Value` with zero-copy patterns, shared computation across rules, and fast literal pattern elimination.
 
 ```rust
-use sigma_engine::{Compiler, SigmaEngine};
+use sigma_engine::SigmaEngine;
 
-// Offline compilation
-let mut compiler = Compiler::new();
-let ruleset = compiler.compile_ruleset(&rules)?;
+// Simple API - automatic compilation and optimization
+let mut engine = SigmaEngine::from_rules(&[rule_yaml])?;
 
-// Create DAG engine
-let mut engine = SigmaEngine::from_ruleset(ruleset)?;
-
-// Online execution
+// Online execution with prefiltering
 let event = serde_json::from_str(r#"{"EventID": "4624"}"#)?;
 let matches = engine.evaluate(&event)?;
 ```
@@ -43,11 +39,10 @@ sigma-engine = { git = "https://github.com/cawalch/sigma-engine.git" }
 ### Basic Example
 
 ```rust
-use sigma_engine::{Compiler, SigmaEngine};
+use sigma_engine::SigmaEngine;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Compile SIGMA rules
-    let mut compiler = Compiler::new();
+    // Define SIGMA rule
     let rule_yaml = r#"
 title: Windows Login Event
 logsource:
@@ -59,10 +54,8 @@ detection:
     condition: selection
 "#;
 
-    let ruleset = compiler.compile_ruleset(&[rule_yaml])?;
-
-    // Create engine
-    let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+    // Create engine with automatic compilation and optimization
+    let mut engine = SigmaEngine::from_rules(&[rule_yaml])?;
 
     // Evaluate events
     let event = serde_json::json!({
@@ -80,16 +73,17 @@ detection:
 ### Multiple Rules with Field Mapping
 
 ```rust
-use sigma_engine::{Compiler, FieldMapping, SigmaEngine};
+use sigma_engine::{Compiler, FieldMapping, SigmaEngine, DagEngineConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up field mapping for custom taxonomy
-    let mut field_mapping = FieldMapping::with_taxonomy("custom_edr".to_string());
+    let mut field_mapping = FieldMapping::new();
     field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
+    field_mapping.add_mapping("ProcessCommandLine".to_string(), "CommandLine".to_string());
 
-    let mut compiler = Compiler::with_field_mapping(field_mapping);
+    let compiler = Compiler::with_field_mapping(field_mapping);
 
-    let rules = vec![
+    let rules = [
         r#"
 title: Suspicious PowerShell
 logsource:
@@ -114,8 +108,9 @@ detection:
 "#,
     ];
 
-    let ruleset = compiler.compile_ruleset(&rules)?;
-    let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+    // Create engine with custom compiler and configuration
+    let config = DagEngineConfig::default();
+    let mut engine = SigmaEngine::from_rules_with_compiler(&rules, compiler, config)?;
 
     let event = serde_json::json!({
         "EventID": 1,
@@ -133,10 +128,9 @@ detection:
 ### Batch Processing
 
 ```rust
-use sigma_engine::{Compiler, SigmaEngine};
+use sigma_engine::SigmaEngine;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut compiler = Compiler::new();
     let rule_yaml = r#"
 title: Windows Login Event
 logsource:
@@ -148,8 +142,8 @@ detection:
     condition: selection
 "#;
 
-    let ruleset = compiler.compile_ruleset(&[rule_yaml])?;
-    let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+    // Create engine with automatic compilation
+    let mut engine = SigmaEngine::from_rules(&[rule_yaml])?;
 
     let events = vec![
         serde_json::json!({"EventID": "4624", "LogonType": 2}),
@@ -165,18 +159,81 @@ detection:
 }
 ```
 
-## Use Cases
+### Advanced Configuration
 
-- **SIEM**: High-speed log analysis and correlation
-- **EDR**: Real-time threat detection and response
+```rust
+use sigma_engine::{SigmaEngine, DagEngineConfig};
 
-## Development
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let rule_yaml = r#"
+title: High Performance Rule
+detection:
+    selection:
+        EventID: 4624
+    condition: selection
+"#;
 
-### Prerequisites
+    // Configure for high-performance scenarios
+    let config = DagEngineConfig {
+        enable_optimization: true,
+        enable_parallel_processing: true,
+        enable_prefilter: true,
+        ..Default::default()
+    };
 
-- Rust 1.72.0 or later
+    // Use builder pattern for advanced configuration
+    let mut engine = SigmaEngine::builder()
+        .with_config(config)
+        .build(&[rule_yaml])?;
 
-### Setup
+    let event = serde_json::json!({"EventID": "4624"});
+    let result = engine.evaluate(&event)?;
+    println!("Matched rules: {:?}", result.matched_rules);
+
+    Ok(())
+}
+```
+
+## Features
+
+- **High Performance**: DAG-based execution with shared computation optimization
+- **Batch Processing**: Optimized batch evaluation for high-throughput scenarios
+- **Zero-Copy Processing**: Efficient memory usage with `serde_json::Value`
+- **Parallel Processing**: Multi-threaded evaluation for large event batches
+- **Configurable Optimization**: Multiple optimization levels and caching strategies
+
+```rust
+use sigma_engine::{SigmaEngine, DagEngineConfig};
+
+// Enable high-performance prefiltering
+let config = DagEngineConfig {
+    enable_prefilter: true,
+    enable_optimization: true,
+    ..Default::default()
+};
+
+let mut engine = SigmaEngine::builder()
+    .with_config(config)
+    .build(&rules)?;
+```
+
+## API Overview
+
+```rust
+// Simple API - automatic compilation and optimization
+let mut engine = SigmaEngine::from_rules(&[rule_yaml])?;
+
+// Builder pattern with configuration
+let mut engine = SigmaEngine::builder()
+    .with_prefilter(true)
+    .with_optimization(true)
+    .build(&[rule_yaml])?;
+
+// Custom compiler and configuration
+let mut engine = SigmaEngine::from_rules_with_compiler(&rules, compiler, config)?;
+```
+
+## Setup
 
 ```bash
 git clone https://github.com/cawalch/sigma-engine.git
@@ -190,6 +247,21 @@ make dev-setup
 make test      # Run tests
 make coverage  # Run with coverage
 make quality   # Run quality checks
+```
+
+### Benchmarking
+
+```bash
+# Run all benchmarks
+cargo bench
+
+# Run specific benchmarks
+cargo bench --bench end_to_end
+cargo bench --bench dag_execution
+cargo bench --bench prefilter_performance
+
+# Profile prefilter effectiveness
+cargo run --example debug_benchmark_selectivity
 ```
 
 ## License

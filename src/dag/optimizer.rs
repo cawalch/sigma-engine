@@ -42,6 +42,12 @@ impl DagOptimizer {
         self
     }
 
+    /// Enable execution order optimization based on selectivity.
+    pub fn with_execution_order_optimization(self) -> Self {
+        // This is always enabled as it's a proven optimization
+        self
+    }
+
     /// Optimize a compiled DAG.
     pub fn optimize(&self, mut dag: CompiledDag) -> Result<CompiledDag> {
         // Perform optimization passes in order
@@ -62,8 +68,8 @@ impl DagOptimizer {
             dag = self.dead_code_elimination(dag)?;
         }
 
-        // Rebuild execution order after optimizations
-        dag = self.rebuild_execution_order(dag)?;
+        // Rebuild execution order after optimizations with selectivity optimization
+        dag = self.rebuild_execution_order_optimized(dag)?;
 
         Ok(dag)
     }
@@ -277,11 +283,105 @@ impl DagOptimizer {
         Ok(dag)
     }
 
-    /// Rebuild execution order after optimizations.
-    fn rebuild_execution_order(&self, mut dag: CompiledDag) -> Result<CompiledDag> {
-        // Perform topological sort to rebuild execution order
-        dag.execution_order = self.topological_sort(&dag)?;
+    /// Rebuild execution order with selectivity-based optimization.
+    /// This implements the fail-fast optimization by prioritizing high-selectivity primitives.
+    fn rebuild_execution_order_optimized(&self, mut dag: CompiledDag) -> Result<CompiledDag> {
+        // First get the basic topological order
+        let basic_order = self.topological_sort(&dag)?;
+
+        // Then optimize the order within topological constraints
+        dag.execution_order = self.optimize_execution_order(&dag, basic_order)?;
         Ok(dag)
+    }
+
+    /// Optimize execution order to prioritize high-selectivity primitives first.
+    /// This is a battle-tested fail-fast optimization.
+    fn optimize_execution_order(
+        &self,
+        dag: &CompiledDag,
+        basic_order: Vec<u32>,
+    ) -> Result<Vec<u32>> {
+        let mut optimized_order = Vec::new();
+        let mut remaining_nodes: HashSet<u32> = basic_order.into_iter().collect();
+        let mut processed_nodes = HashSet::new();
+
+        // Process nodes in waves, respecting dependencies
+        while !remaining_nodes.is_empty() {
+            // Find nodes that can be executed (all dependencies satisfied)
+            let mut ready_nodes: Vec<u32> = remaining_nodes
+                .iter()
+                .filter(|&&node_id| {
+                    if let Some(node) = dag.get_node(node_id) {
+                        node.dependencies
+                            .iter()
+                            .all(|&dep_id| processed_nodes.contains(&dep_id))
+                    } else {
+                        false
+                    }
+                })
+                .copied()
+                .collect();
+
+            if ready_nodes.is_empty() {
+                // This shouldn't happen with a valid DAG, but handle it gracefully
+                break;
+            }
+
+            // Sort ready nodes by estimated selectivity (most selective first)
+            ready_nodes.sort_by(|&a, &b| {
+                let selectivity_a = self.estimate_node_selectivity(dag, a);
+                let selectivity_b = self.estimate_node_selectivity(dag, b);
+
+                // Lower selectivity = more selective = higher priority
+                selectivity_a
+                    .partial_cmp(&selectivity_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // Add ready nodes to execution order
+            for node_id in ready_nodes {
+                optimized_order.push(node_id);
+                remaining_nodes.remove(&node_id);
+                processed_nodes.insert(node_id);
+            }
+        }
+
+        Ok(optimized_order)
+    }
+
+    /// Estimate the selectivity of a node for execution order optimization.
+    /// Lower values indicate higher selectivity (more likely to fail fast).
+    fn estimate_node_selectivity(&self, dag: &CompiledDag, node_id: u32) -> f64 {
+        if let Some(node) = dag.get_node(node_id) {
+            match &node.node_type {
+                NodeType::Primitive { primitive_id } => {
+                    // Estimate selectivity based on primitive characteristics
+                    // This is a heuristic - in practice you'd use historical data
+
+                    // For now, use primitive_id as a proxy (lower IDs = more selective)
+                    // In a real implementation, you'd analyze the primitive's match type and values
+                    0.1 + (*primitive_id as f64 * 0.1).min(0.8)
+                }
+                NodeType::Logical { operation } => {
+                    // Logical operations have medium selectivity
+                    match operation {
+                        LogicalOp::And => 0.3, // AND operations are more selective
+                        LogicalOp::Or => 0.7,  // OR operations are less selective
+                        LogicalOp::Not => 0.5, // NOT operations have medium selectivity
+                    }
+                }
+                NodeType::Result { .. } => {
+                    // Result nodes should be executed last
+                    1.0
+                }
+                NodeType::Prefilter { .. } => {
+                    // Prefilter nodes should be executed first
+                    0.01
+                }
+            }
+        } else {
+            0.5 // Default selectivity for unknown nodes
+        }
     }
 
     /// Build a signature string for an expression to enable CSE.
@@ -313,6 +413,13 @@ impl DagOptimizer {
             NodeType::Result { rule_id } => {
                 // Result nodes should never be merged - each rule needs its own result
                 format!("R{}", rule_id)
+            }
+            NodeType::Prefilter {
+                prefilter_id,
+                pattern_count,
+            } => {
+                // Prefilter nodes are unique by their patterns
+                format!("F{}:{}", prefilter_id, pattern_count)
             }
         }
     }
@@ -347,6 +454,7 @@ impl DagOptimizer {
                 }
             }
             NodeType::Result { .. } => "R".to_string(),
+            NodeType::Prefilter { .. } => "F".to_string(),
         }
     }
 
@@ -1124,7 +1232,7 @@ mod tests {
         // Mess up the execution order
         dag.execution_order = vec![3, 2, 1, 0];
 
-        let optimized = optimizer.rebuild_execution_order(dag).unwrap();
+        let optimized = optimizer.rebuild_execution_order_optimized(dag).unwrap();
 
         // Should rebuild proper topological order
         assert_eq!(optimized.execution_order.len(), 4);

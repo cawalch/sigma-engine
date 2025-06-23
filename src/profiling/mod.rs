@@ -305,8 +305,10 @@ mod tests {
         get_tracker().record_allocation(1024);
 
         let stats = get_allocation_stats();
-        assert!(stats.allocations > initial_stats.allocations);
-        assert!(stats.bytes_allocated >= 1024);
+        // Check that allocations increased by exactly 1
+        assert_eq!(stats.allocations, initial_stats.allocations + 1);
+        // Check that bytes allocated increased by at least 1024
+        assert!(stats.bytes_allocated >= initial_stats.bytes_allocated + 1024);
     }
 
     #[test]

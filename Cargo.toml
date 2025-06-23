@@ -37,6 +37,7 @@ thiserror = "1.0"
 # Core dependencies for matching capabilities
 regex = "1.10"
 base64 = "0.22"
+aho-corasick = "1.1"
 
 # Core dependencies for parallel processing
 rayon = "1.8"
@@ -67,6 +68,12 @@ harness = false
 [[bench]]
 name = "dag_execution"
 harness = false
+
+[[bench]]
+name = "prefilter_performance"
+harness = false
+
+
 
 [profile.bench]
 debug = true

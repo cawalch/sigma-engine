@@ -10,6 +10,7 @@ use super::{
 use crate::dag::DagEngine;
 use crate::error::{Result, SigmaError};
 use crate::ir::CompiledRuleset;
+use crate::DagEngineConfig;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -54,7 +55,7 @@ impl StreamingEngine {
     /// Create a new streaming engine from a compiled ruleset.
     pub fn new(ruleset: CompiledRuleset, config: StreamingConfig) -> Result<Self> {
         // Create DAG engine from ruleset
-        let dag_engine = DagEngine::from_ruleset(ruleset)?;
+        let dag_engine = DagEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default())?;
 
         // Create components
         let batcher = AdaptiveBatcher::new(config.batching.clone());

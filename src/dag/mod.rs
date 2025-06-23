@@ -23,6 +23,7 @@ pub mod engine;
 pub mod evaluator;
 pub mod optimizer;
 pub mod parallel_evaluator;
+pub mod prefilter;
 pub mod types;
 
 // Re-export main types for convenience

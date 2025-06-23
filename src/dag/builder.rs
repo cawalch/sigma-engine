@@ -1,8 +1,9 @@
 //! DAG builder for converting IR bytecode to optimized DAG representation.
 
+use super::prefilter::LiteralPrefilter;
 use super::types::{CompiledDag, DagNode, NodeId, NodeType};
 use crate::error::{Result, SigmaError};
-use crate::ir::{CompiledRuleset, PrimitiveId, RuleId};
+use crate::ir::{CompiledRuleset, Primitive, PrimitiveId, RuleId};
 use std::collections::{HashMap, VecDeque};
 
 /// Builder for constructing optimized DAGs from IR bytecode.
@@ -21,6 +22,12 @@ pub struct DagBuilder {
 
     /// Enable optimization passes
     enable_optimization: bool,
+
+    /// Enable literal prefiltering
+    enable_prefilter: bool,
+
+    /// Prefilter for literal pattern matching
+    prefilter: Option<LiteralPrefilter>,
 }
 
 impl DagBuilder {
@@ -33,12 +40,20 @@ impl DagBuilder {
             rule_result_nodes: HashMap::new(),
 
             enable_optimization: true,
+            enable_prefilter: true,
+            prefilter: None,
         }
     }
 
     /// Enable or disable optimization passes.
     pub fn with_optimization(mut self, enable: bool) -> Self {
         self.enable_optimization = enable;
+        self
+    }
+
+    /// Enable or disable literal prefiltering.
+    pub fn with_prefilter(mut self, enable: bool) -> Self {
+        self.enable_prefilter = enable;
         self
     }
 
@@ -54,6 +69,42 @@ impl DagBuilder {
         // No bytecode chunks to convert
 
         self
+    }
+
+    /// Build DAG from primitives with prefilter support.
+    pub fn from_primitives(mut self, primitives: &[Primitive]) -> Result<Self> {
+        // Build prefilter if enabled
+        if self.enable_prefilter {
+            match LiteralPrefilter::from_primitives(primitives) {
+                Ok(prefilter) => {
+                    // Only add prefilter if it has patterns
+                    if prefilter.stats().pattern_count > 0 {
+                        let prefilter_node_id = self.create_prefilter_node(&prefilter);
+                        self.prefilter = Some(prefilter);
+
+                        // Make all primitive nodes depend on the prefilter
+                        for node in &mut self.nodes {
+                            if matches!(node.node_type, NodeType::Primitive { .. }) {
+                                node.add_dependency(prefilter_node_id);
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    // If prefilter creation fails, continue without it
+                    self.enable_prefilter = false;
+                }
+            }
+        }
+
+        // Create primitive nodes
+        for (primitive_id, _primitive) in primitives.iter().enumerate() {
+            let node_id = self.create_primitive_node(primitive_id as PrimitiveId);
+            self.primitive_nodes
+                .insert(primitive_id as PrimitiveId, node_id);
+        }
+
+        Ok(self)
     }
 
     /// Enable optimization passes.
@@ -92,6 +143,23 @@ impl DagBuilder {
         self.next_node_id += 1;
 
         let node = DagNode::new(node_id, NodeType::Primitive { primitive_id });
+        self.nodes.push(node);
+
+        node_id
+    }
+
+    /// Create a new prefilter node.
+    fn create_prefilter_node(&mut self, prefilter: &LiteralPrefilter) -> NodeId {
+        let node_id = self.next_node_id;
+        self.next_node_id += 1;
+
+        let node = DagNode::new(
+            node_id,
+            NodeType::Prefilter {
+                prefilter_id: 0, // Single prefilter for now
+                pattern_count: prefilter.stats().pattern_count,
+            },
+        );
         self.nodes.push(node);
 
         node_id

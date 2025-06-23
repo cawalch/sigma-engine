@@ -3,7 +3,7 @@
 //! This module provides the main `SigmaEngine` struct that serves as the
 //! primary interface for all SIGMA rule evaluation using DAG-based execution.
 
-use crate::dag::engine::DagEngineConfig;
+use crate::dag::engine::{DagEngineBuilder, DagEngineConfig};
 use crate::dag::{DagEngine, DagEvaluationResult};
 use crate::error::Result;
 use crate::ir::{CompiledRuleset, RuleId};
@@ -104,10 +104,127 @@ pub struct SigmaEngine {
     dag_engine: DagEngine,
 }
 
+/// Type alias for the DAG engine builder to provide a consistent API.
+pub type SigmaEngineBuilder = DagEngineBuilder;
+
 impl SigmaEngine {
+    /// Create a new builder for configuring the SIGMA engine.
+    ///
+    /// This provides a fluent API for setting up the engine with custom
+    /// configurations, compilers, and field mappings.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use sigma_engine::SigmaEngine;
+    ///
+    /// let engine = SigmaEngine::builder()
+    ///     .with_optimization_level(3)
+    ///     .with_prefilter(true)
+    ///     .build(&[rule_yaml])?;
+    /// ```
+    pub fn builder() -> SigmaEngineBuilder {
+        SigmaEngineBuilder::new()
+    }
+    /// Create a new SIGMA engine from SIGMA rule YAML strings.
+    ///
+    /// This method compiles the rules directly to a DAG structure with proper
+    /// rule result nodes, ensuring that rule matches are correctly detected.
+    ///
+    /// # Arguments
+    /// * `rule_yamls` - Array of SIGMA rule YAML strings
+    ///
+    /// # Returns
+    /// A new SigmaEngine instance ready for evaluation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use sigma_engine::SigmaEngine;
+    ///
+    /// let rule_yaml = r#"
+    /// title: Test Rule
+    /// detection:
+    ///     selection:
+    ///         EventID: 4624
+    ///     condition: selection
+    /// "#;
+    ///
+    /// let engine = SigmaEngine::from_rules(&[rule_yaml])?;
+    /// ```
+    pub fn from_rules(rule_yamls: &[&str]) -> Result<Self> {
+        Self::from_rules_with_config(rule_yamls, DagEngineConfig::default())
+    }
+
+    /// Create a new SIGMA engine from SIGMA rule YAML strings with custom configuration.
+    ///
+    /// This method compiles the rules directly to a DAG structure with proper
+    /// rule result nodes, ensuring that rule matches are correctly detected.
+    ///
+    /// # Arguments
+    /// * `rule_yamls` - Array of SIGMA rule YAML strings
+    /// * `config` - Custom DAG engine configuration
+    ///
+    /// # Returns
+    /// A new SigmaEngine instance with custom configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use sigma_engine::{SigmaEngine, DagEngineConfig};
+    ///
+    /// let rule_yaml = r#"
+    /// title: Test Rule
+    /// detection:
+    ///     selection:
+    ///         EventID: 4624
+    ///     condition: selection
+    /// "#;
+    ///
+    /// let config = DagEngineConfig::high_performance();
+    /// let engine = SigmaEngine::from_rules_with_config(&[rule_yaml], config)?;
+    /// ```
+    pub fn from_rules_with_config(rule_yamls: &[&str], config: DagEngineConfig) -> Result<Self> {
+        DagEngine::from_rules_with_config(rule_yamls, config).map(|dag_engine| Self { dag_engine })
+    }
+
+    /// Create a new SIGMA engine from SIGMA rule YAML strings with custom compiler and configuration.
+    ///
+    /// This method allows using a custom compiler with field mapping for proper rule compilation.
+    ///
+    /// # Arguments
+    /// * `rule_yamls` - Array of SIGMA rule YAML strings
+    /// * `compiler` - Custom compiler with field mapping
+    /// * `config` - Custom DAG engine configuration
+    ///
+    /// # Returns
+    /// A new SigmaEngine instance with custom configuration and field mapping.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use sigma_engine::{SigmaEngine, Compiler, FieldMapping, DagEngineConfig};
+    ///
+    /// let mut field_mapping = FieldMapping::new();
+    /// field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
+    ///
+    /// let compiler = Compiler::with_field_mapping(field_mapping);
+    /// let config = DagEngineConfig::default();
+    /// let engine = SigmaEngine::from_rules_with_compiler(&[rule_yaml], compiler, config)?;
+    /// ```
+    pub fn from_rules_with_compiler(
+        rule_yamls: &[&str],
+        compiler: crate::Compiler,
+        config: DagEngineConfig,
+    ) -> Result<Self> {
+        DagEngine::from_rules_with_compiler(rule_yamls, compiler, config)
+            .map(|dag_engine| Self { dag_engine })
+    }
+
     /// Create a new SIGMA engine from a compiled ruleset.
     ///
-    /// This method uses default configuration optimized for most use cases.
+    /// **Note**: This method is deprecated because it doesn't create proper rule result nodes.
+    /// Use `from_rules()` instead for correct rule matching behavior.
     ///
     /// # Arguments
     /// * `ruleset` - The compiled ruleset containing primitives and rules
@@ -124,9 +241,10 @@ impl SigmaEngine {
     /// let ruleset = compiler.compile_ruleset(&rules)?;
     /// let engine = SigmaEngine::from_ruleset(ruleset)?;
     /// ```
+    #[deprecated(note = "Use from_rules() instead for proper rule matching")]
     pub fn from_ruleset(ruleset: CompiledRuleset) -> Result<Self> {
-        let dag_engine = DagEngine::from_ruleset(ruleset)?;
-        Ok(Self { dag_engine })
+        DagEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default())
+            .map(|dag_engine| Self { dag_engine })
     }
 
     /// Create a new SIGMA engine with custom configuration.
@@ -148,8 +266,8 @@ impl SigmaEngine {
     ///
     /// let config = DagEngineConfig {
     ///     enable_optimization: true,
-    ///     enable_caching: true,
     ///     optimization_level: 3,
+    ///     ..Default::default()
     /// };
     ///
     /// let engine = SigmaEngine::from_ruleset_with_config(ruleset, config)?;
@@ -158,8 +276,7 @@ impl SigmaEngine {
         ruleset: CompiledRuleset,
         config: DagEngineConfig,
     ) -> Result<Self> {
-        let dag_engine = DagEngine::from_ruleset_with_config(ruleset, config)?;
-        Ok(Self { dag_engine })
+        DagEngine::from_ruleset_with_config(ruleset, config).map(|dag_engine| Self { dag_engine })
     }
 
     /// Evaluate an event against all rules in the engine.
@@ -184,8 +301,7 @@ impl SigmaEngine {
     /// }
     /// ```
     pub fn evaluate(&mut self, event: &Value) -> Result<EngineResult> {
-        let dag_result = self.dag_engine.evaluate(event)?;
-        Ok(EngineResult::from(dag_result))
+        self.dag_engine.evaluate(event)
     }
 
     /// Evaluate multiple events in batch for improved performance.
@@ -212,13 +328,7 @@ impl SigmaEngine {
     /// let results = engine.evaluate_batch(&events)?;
     /// ```
     pub fn evaluate_batch(&mut self, events: &[Value]) -> Result<Vec<EngineResult>> {
-        // Use the high-performance batch evaluator from the DAG engine
-        let dag_results = self.dag_engine.evaluate_batch(events)?;
-
-        // Convert DAG results to engine results
-        let results = dag_results.into_iter().map(EngineResult::from).collect();
-
-        Ok(results)
+        self.dag_engine.evaluate_batch(events)
     }
 
     /// Get the number of rules in the engine.
@@ -243,25 +353,10 @@ impl SigmaEngine {
 }
 
 /// Result of SIGMA engine evaluation.
-#[derive(Debug, Clone)]
-pub struct EngineResult {
-    /// IDs of rules that matched the event
-    pub matched_rules: Vec<RuleId>,
-    /// Number of nodes evaluated during processing
-    pub nodes_evaluated: usize,
-    /// Number of primitive evaluations performed
-    pub primitive_evaluations: usize,
-}
-
-impl From<DagEvaluationResult> for EngineResult {
-    fn from(dag_result: DagEvaluationResult) -> Self {
-        Self {
-            matched_rules: dag_result.matched_rules,
-            nodes_evaluated: dag_result.nodes_evaluated,
-            primitive_evaluations: dag_result.primitive_evaluations,
-        }
-    }
-}
+///
+/// This is a type alias for `DagEvaluationResult` to provide a consistent
+/// API while avoiding duplication.
+pub type EngineResult = DagEvaluationResult;
 
 #[cfg(test)]
 mod tests {
@@ -271,7 +366,7 @@ mod tests {
     #[test]
     fn test_engine_creation() {
         let ruleset = CompiledRuleset::new();
-        let engine = SigmaEngine::from_ruleset(ruleset);
+        let engine = SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default());
         assert!(engine.is_ok());
     }
 
@@ -284,14 +379,13 @@ mod tests {
     }
 
     #[test]
-    fn test_engine_result_conversion() {
-        let dag_result = DagEvaluationResult {
+    fn test_engine_result_type_alias() {
+        let engine_result: EngineResult = DagEvaluationResult {
             matched_rules: vec![1, 2, 3],
             nodes_evaluated: 10,
             primitive_evaluations: 5,
         };
 
-        let engine_result = EngineResult::from(dag_result);
         assert_eq!(engine_result.matched_rules, vec![1, 2, 3]);
         assert_eq!(engine_result.nodes_evaluated, 10);
         assert_eq!(engine_result.primitive_evaluations, 5);
@@ -299,7 +393,6 @@ mod tests {
 
     #[test]
     fn test_sigma_engine_integration() {
-        use crate::Compiler;
         use serde_json::json;
 
         // Create a simple rule
@@ -313,29 +406,39 @@ detection:
     condition: selection
 "#;
 
-        // Compile the rule
-        let mut compiler = Compiler::new();
-        let ruleset = compiler.compile_ruleset(&[rule_yaml]).unwrap();
-
-        // Create the engine
-        let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+        // Create the engine using the new API that properly compiles DAG
+        let mut engine = SigmaEngine::from_rules(&[rule_yaml]).unwrap();
 
         // Test with matching event
         let matching_event = json!({
             "EventID": "4624"
         });
 
-        // Note: This test may not produce matches because the DAG compilation
-        // and primitive evaluation are not fully integrated yet, but it should
-        // not crash and should return a valid result
         let result = engine.evaluate(&matching_event);
         assert!(result.is_ok());
 
+        let result = result.unwrap();
+        assert!(result.nodes_evaluated > 0);
+        // Now we should actually get matches with the proper DAG compilation
+        assert!(!result.matched_rules.is_empty(), "Should match rule 0");
+        assert_eq!(result.matched_rules, vec![0]);
+
+        // Test with non-matching event
+        let non_matching_event = json!({
+            "EventID": "1234"
+        });
+
+        let result = engine.evaluate(&non_matching_event);
+        assert!(result.is_ok());
+
+        let result = result.unwrap();
+        // Non-matching events should have empty matched_rules
+        assert!(result.matched_rules.is_empty());
+
         // Test engine metadata
-        assert_eq!(engine.rule_count(), 0); // No rules in the DAG yet
-                                            // Primitive and node counts are always non-negative by type definition
-        assert!(engine.primitive_count() < u32::MAX as usize);
-        assert!(engine.node_count() < u32::MAX as usize);
+        assert_eq!(engine.rule_count(), 1); // Should have 1 rule now
+        assert!(engine.primitive_count() > 0); // Should have primitives
+        assert!(engine.node_count() > 0); // Should have nodes
     }
 
     #[test]
@@ -399,7 +502,8 @@ detection:
     #[test]
     fn test_engine_batch_evaluation_empty() {
         let ruleset = CompiledRuleset::new();
-        let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+        let mut engine =
+            SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
 
         let events: Vec<serde_json::Value> = vec![];
         let results = engine.evaluate_batch(&events).unwrap();
@@ -410,7 +514,8 @@ detection:
     #[test]
     fn test_engine_batch_evaluation_single_event() {
         let ruleset = CompiledRuleset::new();
-        let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+        let mut engine =
+            SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
 
         let events = vec![serde_json::json!({"test": "value"})];
         let results = engine.evaluate_batch(&events).unwrap();
@@ -422,7 +527,8 @@ detection:
     #[test]
     fn test_engine_batch_evaluation_multiple_events() {
         let ruleset = CompiledRuleset::new();
-        let mut engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+        let mut engine =
+            SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
 
         let events = vec![
             serde_json::json!({"test1": "value1"}),
@@ -440,7 +546,8 @@ detection:
     #[test]
     fn test_engine_contains_rule() {
         let ruleset = CompiledRuleset::new();
-        let engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+        let engine =
+            SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
 
         // Since we have no rules, contains_rule should return false
         assert!(!engine.contains_rule(1));
@@ -472,7 +579,8 @@ detection:
     #[test]
     fn test_engine_metadata_consistency() {
         let ruleset = CompiledRuleset::new();
-        let engine = SigmaEngine::from_ruleset(ruleset).unwrap();
+        let engine =
+            SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
 
         // All counts should be consistent and non-negative
         let rule_count = engine.rule_count();
@@ -489,27 +597,54 @@ detection:
     }
 
     #[test]
-    fn test_dag_evaluation_result_conversion_edge_cases() {
-        // Test conversion with empty results
-        let empty_dag_result = DagEvaluationResult {
+    fn test_sigma_engine_builder() {
+        let rule_yaml = r#"
+title: Test Rule
+detection:
+    selection:
+        EventID: 4624
+    condition: selection
+"#;
+
+        // Test basic builder usage
+        let engine = SigmaEngine::builder().build(&[rule_yaml]);
+        assert!(engine.is_ok());
+
+        // Test builder with configuration
+        let engine = SigmaEngine::builder()
+            .with_optimization_level(3)
+            .with_prefilter(true)
+            .build(&[rule_yaml]);
+        assert!(engine.is_ok());
+
+        // Test builder chaining
+        let engine = SigmaEngine::builder()
+            .with_optimization(true)
+            .with_parallel_processing(false)
+            .build(&[rule_yaml]);
+        assert!(engine.is_ok());
+    }
+
+    #[test]
+    fn test_engine_result_edge_cases() {
+        // Test with empty results
+        let empty_result: EngineResult = DagEvaluationResult {
             matched_rules: vec![],
             nodes_evaluated: 0,
             primitive_evaluations: 0,
         };
-        let empty_engine_result = EngineResult::from(empty_dag_result);
-        assert!(empty_engine_result.matched_rules.is_empty());
-        assert_eq!(empty_engine_result.nodes_evaluated, 0);
-        assert_eq!(empty_engine_result.primitive_evaluations, 0);
+        assert!(empty_result.matched_rules.is_empty());
+        assert_eq!(empty_result.nodes_evaluated, 0);
+        assert_eq!(empty_result.primitive_evaluations, 0);
 
-        // Test conversion with large values
-        let large_dag_result = DagEvaluationResult {
+        // Test with large values
+        let large_result: EngineResult = DagEvaluationResult {
             matched_rules: (1..=1000).collect(),
             nodes_evaluated: 50000,
             primitive_evaluations: 25000,
         };
-        let large_engine_result = EngineResult::from(large_dag_result);
-        assert_eq!(large_engine_result.matched_rules.len(), 1000);
-        assert_eq!(large_engine_result.nodes_evaluated, 50000);
-        assert_eq!(large_engine_result.primitive_evaluations, 25000);
+        assert_eq!(large_result.matched_rules.len(), 1000);
+        assert_eq!(large_result.nodes_evaluated, 50000);
+        assert_eq!(large_result.primitive_evaluations, 25000);
     }
 }

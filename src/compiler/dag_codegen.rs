@@ -108,13 +108,14 @@ impl DagCodegenContext {
                     // Single primitive - create or reuse primitive node
                     Ok(self.get_or_create_primitive_node(primitive_ids[0]))
                 } else {
-                    // Multiple primitives - create OR node for implicit OR behavior
-                    let or_node = self.create_logical_node(LogicalOp::Or);
+                    // Multiple primitives - create AND node for implicit AND behavior
+                    // According to SIGMA spec, multiple fields in a selection are combined with AND logic
+                    let and_node = self.create_logical_node(LogicalOp::And);
                     for &primitive_id in primitive_ids {
                         let primitive_node = self.get_or_create_primitive_node(primitive_id);
-                        self.add_dependency(or_node, primitive_node);
+                        self.add_dependency(and_node, primitive_node);
                     }
-                    Ok(or_node)
+                    Ok(and_node)
                 }
             }
             ConditionAst::And(left, right) => {
@@ -340,7 +341,7 @@ mod tests {
         let result = generate_dag_from_ast(&ast, &selection_map, 1).unwrap();
 
         assert_eq!(result.rule_id, 1);
-        // Should have: 2 primitives + 1 OR node + 1 result node = 4 nodes
+        // Should have: 2 primitives + 1 AND node + 1 result node = 4 nodes
         assert_eq!(result.nodes.len(), 4);
         assert_eq!(result.primitive_nodes.len(), 2);
         assert!(result.primitive_nodes.contains_key(&0));
