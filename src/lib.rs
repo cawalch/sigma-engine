@@ -24,10 +24,10 @@
 //!     condition: selection
 //! "#;
 //!
-//! let ruleset = compiler.compile_ruleset(&[rule_yaml])?;
+//! let rules = vec![rule_yaml];
 //!
 //! // Create engine
-//! let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+//! let mut engine = SigmaEngine::from_rules(&rules)?;
 //!
 //! // Evaluate events
 //! let event = serde_json::json!({
@@ -45,9 +45,7 @@
 //! ```rust,ignore
 //! use sigma_engine::{Compiler, SigmaEngine};
 //!
-//! let mut compiler = Compiler::new();
-//! let ruleset = compiler.compile_ruleset(&rules)?;
-//! let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+//! let mut engine = SigmaEngine::from_rules(&rules)?;
 //!
 //! // Process multiple events efficiently
 //! let events = vec![
@@ -72,9 +70,7 @@
 //! field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
 //! field_mapping.add_mapping("ProcessCommandLine".to_string(), "CommandLine".to_string());
 //!
-//! let mut compiler = Compiler::with_field_mapping(field_mapping);
-//! let ruleset = compiler.compile_ruleset(&rules)?;
-//! let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+//! let mut engine = SigmaEngine::from_rules_with_compiler(&rules, compiler, EngineConfig::default())?;
 //!
 //! // Events use your custom field names
 //! let event = serde_json::json!({

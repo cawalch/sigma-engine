@@ -388,7 +388,7 @@ impl DagOptimizer {
     fn build_expression_signature(node: &DagNode, dag: &CompiledDag) -> String {
         match &node.node_type {
             NodeType::Primitive { primitive_id } => {
-                format!("P{}", primitive_id)
+                format!("P{primitive_id}")
             }
             NodeType::Logical { operation } => {
                 let mut dep_signatures: Vec<String> = node
@@ -412,14 +412,14 @@ impl DagOptimizer {
             }
             NodeType::Result { rule_id } => {
                 // Result nodes should never be merged - each rule needs its own result
-                format!("R{}", rule_id)
+                format!("R{rule_id}")
             }
             NodeType::Prefilter {
                 prefilter_id,
                 pattern_count,
             } => {
                 // Prefilter nodes are unique by their patterns
-                format!("F{}:{}", prefilter_id, pattern_count)
+                format!("F{prefilter_id}:{pattern_count}")
             }
         }
     }

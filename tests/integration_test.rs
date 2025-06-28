@@ -100,7 +100,7 @@ detection:
     let result1 = engine1
         .evaluate(&test_event)
         .expect("Failed to evaluate rule 1");
-    println!("Rule 1 individual result: {:?}", result1);
+    println!("Rule 1 individual result: {result1:?}");
     assert!(
         !result1.matched_rules.is_empty(),
         "Rule 1 should match individually"
@@ -113,7 +113,7 @@ detection:
     let result2 = engine2
         .evaluate(&test_event)
         .expect("Failed to evaluate rule 2");
-    println!("Rule 2 individual result: {:?}", result2);
+    println!("Rule 2 individual result: {result2:?}");
     assert!(
         !result2.matched_rules.is_empty(),
         "Rule 2 should match individually"
@@ -128,7 +128,7 @@ detection:
     let result_multi = engine_multi
         .evaluate(&test_event)
         .expect("Failed to evaluate multiple rules");
-    println!("Multiple rules result: {:?}", result_multi);
+    println!("Multiple rules result: {result_multi:?}");
 
     // This assertion should pass but currently fails due to the bug
     assert_eq!(
@@ -231,14 +231,13 @@ detection:
         let compiler = Compiler::with_field_mapping(field_mapping.clone());
         let config = DagEngineConfig::default();
         let mut engine = SigmaEngine::from_rules_with_compiler(&[rule], compiler, config)
-            .unwrap_or_else(|_| panic!("Failed to create engine for {}", rule_name));
+            .unwrap_or_else(|_| panic!("Failed to create engine for {rule_name}"));
         let result = engine
             .evaluate(&test_event)
-            .unwrap_or_else(|_| panic!("Failed to evaluate {}", rule_name));
+            .unwrap_or_else(|_| panic!("Failed to evaluate {rule_name}"));
         assert!(
             !result.matched_rules.is_empty(),
-            "{} should match individually",
-            rule_name
+            "{rule_name} should match individually"
         );
     }
 
@@ -394,7 +393,7 @@ detection:
     let result_rule1_individual = engine_rule1
         .evaluate(&event_rule1)
         .expect("Failed to evaluate rule1 individually");
-    println!("Rule1 individual result: {:?}", result_rule1_individual);
+    println!("Rule1 individual result: {result_rule1_individual:?}");
 
     // Test multiple rules compilation
     let compiler = Compiler::with_field_mapping(field_mapping);

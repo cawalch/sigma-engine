@@ -127,8 +127,7 @@ impl<'a> ConditionParser<'a> {
                     Ok(ConditionAst::Identifier(name))
                 } else {
                     Err(SigmaError::CompilationError(format!(
-                        "Unknown selection identifier: {}",
-                        name
+                        "Unknown selection identifier: {name}"
                     )))
                 }
             }
@@ -259,8 +258,7 @@ pub(crate) fn tokenize_condition(condition: &str) -> Result<Vec<Token>> {
             }
             _ => {
                 return Err(SigmaError::CompilationError(format!(
-                    "Unexpected character in condition: '{}'",
-                    ch
+                    "Unexpected character in condition: '{ch}'"
                 )));
             }
         }

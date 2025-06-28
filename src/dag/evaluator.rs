@@ -140,7 +140,7 @@ impl DagEvaluator {
 
         // Parse JSON only after prefilter passes (for the ~5-10% that match)
         let event: Value = serde_json::from_str(json_str)
-            .map_err(|e| SigmaError::ExecutionError(format!("Invalid JSON: {}", e)))?;
+            .map_err(|e| SigmaError::ExecutionError(format!("Invalid JSON: {e}")))?;
 
         // Continue with standard evaluation path
         // Ultra-fast path for single primitive rules (most common case)
@@ -248,7 +248,7 @@ impl DagEvaluator {
         let node = self
             .dag
             .get_node(node_id)
-            .ok_or_else(|| SigmaError::ExecutionError(format!("Node {} not found", node_id)))?
+            .ok_or_else(|| SigmaError::ExecutionError(format!("Node {node_id} not found")))?
             .clone();
 
         match &node.node_type {
@@ -280,7 +280,7 @@ impl DagEvaluator {
         let node = self
             .dag
             .get_node(node_id)
-            .ok_or_else(|| SigmaError::ExecutionError(format!("Node {} not found", node_id)))?
+            .ok_or_else(|| SigmaError::ExecutionError(format!("Node {node_id} not found")))?
             .clone();
 
         match &node.node_type {
@@ -317,8 +317,7 @@ impl DagEvaluator {
             Ok(primitive.matches(&context))
         } else {
             Err(SigmaError::ExecutionError(format!(
-                "Primitive {} not found",
-                primitive_id
+                "Primitive {primitive_id} not found"
             )))
         }
     }
@@ -338,8 +337,7 @@ impl DagEvaluator {
                         }
                     } else {
                         return Err(SigmaError::ExecutionError(format!(
-                            "Dependency {} not evaluated",
-                            dep_id
+                            "Dependency {dep_id} not evaluated"
                         )));
                     }
                 }
@@ -353,8 +351,7 @@ impl DagEvaluator {
                         }
                     } else {
                         return Err(SigmaError::ExecutionError(format!(
-                            "Dependency {} not evaluated",
-                            dep_id
+                            "Dependency {dep_id} not evaluated"
                         )));
                     }
                 }

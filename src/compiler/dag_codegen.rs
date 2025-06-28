@@ -94,13 +94,12 @@ impl DagCodegenContext {
             ConditionAst::Identifier(name) => {
                 // Look up the selection in the selection map
                 let primitive_ids = selection_map.get(name).ok_or_else(|| {
-                    SigmaError::CompilationError(format!("Unknown selection: {}", name))
+                    SigmaError::CompilationError(format!("Unknown selection: {name}"))
                 })?;
 
                 if primitive_ids.is_empty() {
                     return Err(SigmaError::CompilationError(format!(
-                        "Empty selection: {}",
-                        name
+                        "Empty selection: {name}"
                     )));
                 }
 
@@ -199,8 +198,7 @@ impl DagCodegenContext {
 
                 if !has_matches {
                     return Err(SigmaError::CompilationError(format!(
-                        "No selections found matching pattern: {}",
-                        pattern
+                        "No selections found matching pattern: {pattern}"
                     )));
                 }
 
@@ -223,8 +221,7 @@ impl DagCodegenContext {
 
                 if !has_matches {
                     return Err(SigmaError::CompilationError(format!(
-                        "No selections found matching pattern: {}",
-                        pattern
+                        "No selections found matching pattern: {pattern}"
                     )));
                 }
 
@@ -248,8 +245,7 @@ impl DagCodegenContext {
 
                 if !has_matches {
                     return Err(SigmaError::CompilationError(format!(
-                        "No selections found matching pattern: {}",
-                        pattern
+                        "No selections found matching pattern: {pattern}"
                     )));
                 }
 

@@ -78,7 +78,7 @@ impl AllocationTracker {
             let info = sites.entry(site_id).or_insert_with(|| AllocationInfo {
                 size,
                 count: 0,
-                backtrace: format!("allocation_size_{}", size),
+                backtrace: format!("allocation_size_{size}"),
             });
             info.count += 1;
         }

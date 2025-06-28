@@ -223,7 +223,7 @@ impl GlobalRegexCache {
 
         // Compile the regex
         let regex = Regex::new(pattern)
-            .map_err(|e| SigmaError::InvalidRegex(format!("Pattern '{}': {}", pattern, e)))?;
+            .map_err(|e| SigmaError::InvalidRegex(format!("Pattern '{pattern}': {e}")))?;
 
         let compiled_regex = Arc::new(regex);
 

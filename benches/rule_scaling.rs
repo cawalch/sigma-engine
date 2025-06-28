@@ -76,12 +76,12 @@ level: medium
 
             match i % rule_templates.len() {
                 0 => template
-                    .replace("{}", &format!("{}", i))
-                    .replace("{}.exe", &format!("{}.exe", process_name)),
+                    .replace("{}", &format!("{i}"))
+                    .replace("{}.exe", &format!("{process_name}.exe")),
                 1 => template
-                    .replace("{}", &format!("{}", i))
+                    .replace("{}", &format!("{i}"))
                     .replace("{}", &format!("{}", 8000 + (i % 1000))),
-                _ => template.replace("{}", &format!("{}", i)),
+                _ => template.replace("{}", &format!("{i}")),
             }
         })
         .collect()

@@ -434,7 +434,7 @@ mod tests {
             vec![],
         );
 
-        let debug_str = format!("{:?}", compiled);
+        let debug_str = format!("{compiled:?}");
         assert!(debug_str.contains("EventID"));
         assert!(debug_str.contains("4624"));
         assert!(debug_str.contains("CompiledPrimitive"));

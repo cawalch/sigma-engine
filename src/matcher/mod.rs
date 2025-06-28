@@ -47,8 +47,6 @@ pub mod hooks;
 pub mod modifiers;
 pub mod types;
 
-// Some deprecated modules removed - keeping hooks for multi-layer integration
-
 // Re-export main types for convenience
 pub use builder::MatcherBuilder;
 pub use cache::{
