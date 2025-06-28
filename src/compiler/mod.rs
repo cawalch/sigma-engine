@@ -208,7 +208,7 @@ impl Compiler {
         self.current_selection_map.clear();
 
         let yaml_doc: Value = serde_yaml::from_str(rule_yaml)
-            .map_err(|e| SigmaError::YamlError(format!("Failed to parse YAML: {}", e)))?;
+            .map_err(|e| SigmaError::YamlError(format!("Failed to parse YAML: {e}")))?;
 
         let rule_id = self.extract_rule_id_from_yaml(&yaml_doc);
 
@@ -302,7 +302,7 @@ impl Compiler {
         self.current_selection_map.clear();
 
         let yaml_doc: Value = serde_yaml::from_str(rule_yaml)
-            .map_err(|e| SigmaError::YamlError(format!("Failed to parse YAML: {}", e)))?;
+            .map_err(|e| SigmaError::YamlError(format!("Failed to parse YAML: {e}")))?;
 
         let rule_id = self.extract_rule_id_from_yaml(&yaml_doc);
 
@@ -629,8 +629,7 @@ impl Compiler {
                         }
                         _ => {
                             return Err(SigmaError::CompilationError(format!(
-                                "Unsupported field value type for field '{}'",
-                                field_name
+                                "Unsupported field value type for field '{field_name}'"
                             )));
                         }
                     }

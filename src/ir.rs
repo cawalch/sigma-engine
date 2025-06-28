@@ -229,7 +229,7 @@ mod tests {
             vec!["case_insensitive".to_string()],
         );
 
-        let debug_str = format!("{:?}", prim);
+        let debug_str = format!("{prim:?}");
         assert!(debug_str.contains("EventID"));
         assert!(debug_str.contains("equals"));
         assert!(debug_str.contains("4624"));
@@ -319,7 +319,7 @@ mod tests {
         ruleset.primitive_map.insert(prim.clone(), 0);
         ruleset.primitives.push(prim);
 
-        let debug_str = format!("{:?}", ruleset);
+        let debug_str = format!("{ruleset:?}");
         assert!(debug_str.contains("CompiledRuleset"));
         assert!(debug_str.contains("primitive_map"));
         assert!(debug_str.contains("primitives"));

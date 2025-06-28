@@ -75,8 +75,8 @@ fn demonstrate_adaptive_batching() {
         }
 
         let stats = batcher.get_stats();
-        println!("{} Strategy:", name);
-        println!("  Batches created: {}", batches_created);
+        println!("{name} Strategy:");
+        println!("  Batches created: {batches_created}");
         println!("  Current batch size: {}", stats.current_batch_size);
         println!(
             "  Average throughput: {:.0} EPS",
@@ -113,7 +113,7 @@ fn demonstrate_backpressure_control() {
             controller.event_added(event_size);
         } else {
             controller.event_dropped();
-            println!("Event {} dropped due to backpressure", i);
+            println!("Event {i} dropped due to backpressure");
         }
 
         // Simulate some processing
@@ -203,7 +203,7 @@ detection:
 
     println!("Streaming Engine Results:");
     println!("  Events processed: {}", results.len());
-    println!("  Total matches: {}", total_matches);
+    println!("  Total matches: {total_matches}");
     println!(
         "  Processing time: {:.1}ms",
         processing_time.as_secs_f64() * 1000.0
@@ -240,7 +240,7 @@ fn demonstrate_kafka_patterns() {
     ];
 
     for (config_name, config) in configs {
-        println!("\n{} Configuration:", config_name);
+        println!("\n{config_name} Configuration:");
 
         // Create a simple ruleset for testing
         let rules = [r#"
@@ -279,14 +279,14 @@ detection:
         let total_time = start_time.elapsed();
         let throughput = total_processed as f64 / total_time.as_secs_f64();
 
-        println!("  Partitions: {}", partitions);
-        println!("  Events per partition: {}", events_per_partition);
-        println!("  Total processed: {}", total_processed);
+        println!("  Partitions: {partitions}");
+        println!("  Events per partition: {events_per_partition}");
+        println!("  Total processed: {total_processed}");
         println!(
             "  Processing time: {:.1}ms",
             total_time.as_secs_f64() * 1000.0
         );
-        println!("  Throughput: {:.0} EPS", throughput);
+        println!("  Throughput: {throughput:.0} EPS");
 
         let stats = engine.get_engine_stats();
         println!(
@@ -367,7 +367,7 @@ fn generate_partition_events(partition_id: u32, count: usize) -> Vec<StreamingEv
         });
 
         let metadata =
-            EventMetadata::with_topic_offset(format!("security-events-{}", partition_id), i as u64);
+            EventMetadata::with_topic_offset(format!("security-events-{partition_id}"), i as u64);
 
         events.push(StreamingEvent::with_metadata(event_data, metadata));
     }

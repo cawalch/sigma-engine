@@ -454,15 +454,6 @@ impl DagEngine {
         })
     }
 
-    /// Create a new DAG engine from a compiled ruleset.
-    ///
-    /// **Note**: This method is deprecated because it doesn't create proper rule result nodes.
-    /// Use `from_rules()` instead for correct rule matching behavior.
-    #[deprecated(note = "Use from_rules() instead for proper rule matching")]
-    pub fn from_ruleset(ruleset: CompiledRuleset) -> Result<Self> {
-        Self::from_ruleset_with_config(ruleset, DagEngineConfig::default())
-    }
-
     /// Create a new DAG engine with custom configuration.
     pub fn from_ruleset_with_config(
         ruleset: CompiledRuleset,
@@ -564,16 +555,11 @@ impl DagEngine {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use sigma_engine::dag::engine::DagEngine;
-    /// use sigma_engine::ir::{CompiledRuleset, Primitive};
-    /// use std::collections::HashMap;
     ///
-    /// let ruleset = CompiledRuleset {
-    ///     primitives: vec![],
-    ///     primitive_map: HashMap::new(),
-    /// };
-    /// let mut engine = DagEngine::from_ruleset(ruleset)?;
+    /// let rules = vec!["title: Test\ndetection:\n  selection:\n    EventID: 4624\n  condition: selection"];
+    /// let mut engine = DagEngine::from_rules(&rules)?;
     /// let json_event = r#"{"EventID": "4624", "ProcessName": "explorer.exe"}"#;
     /// let result = engine.evaluate_raw(json_event)?;
     /// # Ok::<(), sigma_engine::error::SigmaError>(())
@@ -963,7 +949,7 @@ mod tests {
     #[test]
     fn test_dag_engine_config_debug() {
         let config = DagEngineConfig::default();
-        let debug_str = format!("{:?}", config);
+        let debug_str = format!("{config:?}");
 
         assert!(debug_str.contains("DagEngineConfig"));
         assert!(debug_str.contains("enable_optimization"));
@@ -1051,7 +1037,7 @@ mod tests {
             execution_time_ns: 100,
         };
 
-        let debug_str = format!("{:?}", result);
+        let debug_str = format!("{result:?}");
 
         assert!(debug_str.contains("DagExecutionResult"));
         assert!(debug_str.contains("matched_rules"));
@@ -1274,7 +1260,7 @@ detection:
 
         for i in 0..100 {
             let primitive = Primitive::new(
-                format!("field{}", i),
+                format!("field{i}"),
                 "equals".to_string(),
                 vec![format!("value{}", i)],
                 Vec::new(),

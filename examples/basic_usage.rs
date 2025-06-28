@@ -113,7 +113,7 @@ detection:
         "CommandLine": "powershell.exe -Command Invoke-Expression"
     });
 
-    println!("Testing PowerShell event: {}", powershell_event);
+    println!("Testing PowerShell event: {powershell_event}");
     let result = engine.evaluate(&powershell_event)?;
     println!("PowerShell event matches: {:?}", result.matched_rules);
 
@@ -274,7 +274,7 @@ detection:
         "CommandLine": "whoami /all"
     });
 
-    println!("Testing reconnaissance event: {}", recon_event);
+    println!("Testing reconnaissance event: {recon_event}");
     let result = engine.evaluate(&recon_event)?;
     println!("Reconnaissance event matches: {:?}", result.matched_rules);
 
@@ -369,11 +369,11 @@ detection:
     let results = engine.evaluate_batch(&events)?;
     let processing_time = start_time.elapsed();
 
-    println!("Batch processing completed in {:?}", processing_time);
+    println!("Batch processing completed in {processing_time:?}");
 
     // Calculate total matches
     let total_matches: usize = results.iter().map(|r| r.matched_rules.len()).sum();
-    println!("Total matches: {}", total_matches);
+    println!("Total matches: {total_matches}");
     println!("Events processed: {}", events.len());
     println!(
         "Throughput: {:.0} events/sec",

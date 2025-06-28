@@ -155,7 +155,7 @@ pub fn create_base64_decode() -> ModifierFn {
         general_purpose::STANDARD
             .decode(input)
             .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
-            .map_err(|e| SigmaError::ModifierError(format!("Base64 decode failed: {}", e)))
+            .map_err(|e| SigmaError::ModifierError(format!("Base64 decode failed: {e}")))
     })
 }
 

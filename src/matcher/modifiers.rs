@@ -129,11 +129,10 @@ fn create_base64_decode() -> ModifierFn {
     Arc::new(|input| {
         general_purpose::STANDARD
             .decode(input)
-            .map_err(|e| SigmaError::ModifierError(format!("Base64 decode failed: {}", e)))
+            .map_err(|e| SigmaError::ModifierError(format!("Base64 decode failed: {e}")))
             .and_then(|bytes| {
-                String::from_utf8(bytes).map_err(|e| {
-                    SigmaError::ModifierError(format!("UTF-8 conversion failed: {}", e))
-                })
+                String::from_utf8(bytes)
+                    .map_err(|e| SigmaError::ModifierError(format!("UTF-8 conversion failed: {e}")))
             })
     })
 }
@@ -314,11 +313,8 @@ fn create_hex_decode() -> ModifierFn {
 
         match bytes {
             Ok(byte_vec) => String::from_utf8(byte_vec)
-                .map_err(|e| SigmaError::ModifierError(format!("UTF-8 conversion failed: {}", e))),
-            Err(e) => Err(SigmaError::ModifierError(format!(
-                "Hex decode failed: {}",
-                e
-            ))),
+                .map_err(|e| SigmaError::ModifierError(format!("UTF-8 conversion failed: {e}"))),
+            Err(e) => Err(SigmaError::ModifierError(format!("Hex decode failed: {e}"))),
         }
     })
 }
@@ -327,7 +323,7 @@ fn create_hex_encode() -> ModifierFn {
     Arc::new(|input| {
         let encoded = input
             .bytes()
-            .map(|b| format!("{:02x}", b))
+            .map(|b| format!("{b:02x}"))
             .collect::<String>();
         Ok(encoded)
     })
@@ -376,7 +372,7 @@ fn create_to_int() -> ModifierFn {
             .trim()
             .parse::<i64>()
             .map(|i| i.to_string())
-            .map_err(|e| SigmaError::ModifierError(format!("Integer conversion failed: {}", e)))
+            .map_err(|e| SigmaError::ModifierError(format!("Integer conversion failed: {e}")))
     })
 }
 
@@ -386,7 +382,7 @@ fn create_to_float() -> ModifierFn {
             .trim()
             .parse::<f64>()
             .map(|f| f.to_string())
-            .map_err(|e| SigmaError::ModifierError(format!("Float conversion failed: {}", e)))
+            .map_err(|e| SigmaError::ModifierError(format!("Float conversion failed: {e}")))
     })
 }
 
@@ -409,21 +405,21 @@ fn create_iso_timestamp() -> ModifierFn {
 fn create_md5_hash() -> ModifierFn {
     Arc::new(|input| {
         // MD5 hashing - in production use proper crypto library
-        Ok(format!("md5:{}", input))
+        Ok(format!("md5:{input}"))
     })
 }
 
 fn create_sha1_hash() -> ModifierFn {
     Arc::new(|input| {
         // SHA1 hashing - in production use proper crypto library
-        Ok(format!("sha1:{}", input))
+        Ok(format!("sha1:{input}"))
     })
 }
 
 fn create_sha256_hash() -> ModifierFn {
     Arc::new(|input| {
         // SHA256 hashing - in production use proper crypto library
-        Ok(format!("sha256:{}", input))
+        Ok(format!("sha256:{input}"))
     })
 }
 

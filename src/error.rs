@@ -39,41 +39,41 @@ pub enum SigmaError {
 impl fmt::Display for SigmaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SigmaError::CompilationError(msg) => write!(f, "Compilation error: {}", msg),
-            SigmaError::ExecutionError(msg) => write!(f, "Execution error: {}", msg),
-            SigmaError::InvalidBytecode(msg) => write!(f, "Invalid bytecode: {}", msg),
-            SigmaError::InvalidPrimitiveId(id) => write!(f, "Invalid primitive ID: {}", id),
+            SigmaError::CompilationError(msg) => write!(f, "Compilation error: {msg}"),
+            SigmaError::ExecutionError(msg) => write!(f, "Execution error: {msg}"),
+            SigmaError::InvalidBytecode(msg) => write!(f, "Invalid bytecode: {msg}"),
+            SigmaError::InvalidPrimitiveId(id) => write!(f, "Invalid primitive ID: {id}"),
             SigmaError::StackUnderflow => write!(f, "Stack underflow during execution"),
             SigmaError::StackOverflow => write!(f, "Stack overflow during execution"),
-            SigmaError::IoError(msg) => write!(f, "IO error: {}", msg),
-            SigmaError::YamlError(msg) => write!(f, "YAML parsing error: {}", msg),
+            SigmaError::IoError(msg) => write!(f, "IO error: {msg}"),
+            SigmaError::YamlError(msg) => write!(f, "YAML parsing error: {msg}"),
             SigmaError::UnsupportedMatchType(match_type) => {
-                write!(f, "Unsupported match type: {}", match_type)
+                write!(f, "Unsupported match type: {match_type}")
             }
-            SigmaError::InvalidRegex(pattern) => write!(f, "Invalid regex pattern: {}", pattern),
-            SigmaError::InvalidIpAddress(ip) => write!(f, "Invalid IP address: {}", ip),
-            SigmaError::InvalidCidr(cidr) => write!(f, "Invalid CIDR notation: {}", cidr),
-            SigmaError::InvalidNumber(num) => write!(f, "Invalid number: {}", num),
-            SigmaError::InvalidRange(range) => write!(f, "Invalid range: {}", range),
+            SigmaError::InvalidRegex(pattern) => write!(f, "Invalid regex pattern: {pattern}"),
+            SigmaError::InvalidIpAddress(ip) => write!(f, "Invalid IP address: {ip}"),
+            SigmaError::InvalidCidr(cidr) => write!(f, "Invalid CIDR notation: {cidr}"),
+            SigmaError::InvalidNumber(num) => write!(f, "Invalid number: {num}"),
+            SigmaError::InvalidRange(range) => write!(f, "Invalid range: {range}"),
             SigmaError::InvalidThreshold(threshold) => {
-                write!(f, "Invalid threshold: {}", threshold)
+                write!(f, "Invalid threshold: {threshold}")
             }
-            SigmaError::ModifierError(msg) => write!(f, "Modifier error: {}", msg),
-            SigmaError::FieldExtractionError(msg) => write!(f, "Field extraction error: {}", msg),
+            SigmaError::ModifierError(msg) => write!(f, "Modifier error: {msg}"),
+            SigmaError::FieldExtractionError(msg) => write!(f, "Field extraction error: {msg}"),
             SigmaError::ExecutionTimeout => write!(f, "Execution timeout exceeded"),
-            SigmaError::TooManyOperations(count) => write!(f, "Too many operations: {}", count),
+            SigmaError::TooManyOperations(count) => write!(f, "Too many operations: {count}"),
             SigmaError::TooManyRegexOperations(count) => {
-                write!(f, "Too many regex operations: {}", count)
+                write!(f, "Too many regex operations: {count}")
             }
             SigmaError::BatchSizeMismatch => write!(f, "Batch size mismatch"),
-            SigmaError::InvalidPrimitiveIndex(idx) => write!(f, "Invalid primitive index: {}", idx),
+            SigmaError::InvalidPrimitiveIndex(idx) => write!(f, "Invalid primitive index: {idx}"),
             SigmaError::IncompatibleVersion(version) => {
-                write!(f, "Incompatible version: {}", version)
+                write!(f, "Incompatible version: {version}")
             }
-            SigmaError::InvalidNumericValue(value) => write!(f, "Invalid numeric value: {}", value),
-            SigmaError::InvalidFieldPath(path) => write!(f, "Invalid field path: {}", path),
+            SigmaError::InvalidNumericValue(value) => write!(f, "Invalid numeric value: {value}"),
+            SigmaError::InvalidFieldPath(path) => write!(f, "Invalid field path: {path}"),
             SigmaError::DangerousRegexPattern(pattern) => {
-                write!(f, "Dangerous regex pattern detected: {}", pattern)
+                write!(f, "Dangerous regex pattern detected: {pattern}")
             }
         }
     }
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn test_error_debug() {
         let error = SigmaError::StackOverflow;
-        let debug_str = format!("{:?}", error);
+        let debug_str = format!("{error:?}");
         assert_eq!(debug_str, "StackOverflow");
     }
 
@@ -205,27 +205,24 @@ mod tests {
     fn test_error_display_comprehensive() {
         let err = SigmaError::CompilationError("test compilation error".to_string());
         assert_eq!(
-            format!("{}", err),
+            format!("{err}"),
             "Compilation error: test compilation error"
         );
 
         let err = SigmaError::ExecutionError("test execution error".to_string());
-        assert_eq!(format!("{}", err), "Execution error: test execution error");
+        assert_eq!(format!("{err}"), "Execution error: test execution error");
 
         let err = SigmaError::InvalidBytecode("test invalid bytecode".to_string());
-        assert_eq!(
-            format!("{}", err),
-            "Invalid bytecode: test invalid bytecode"
-        );
+        assert_eq!(format!("{err}"), "Invalid bytecode: test invalid bytecode");
 
         let err = SigmaError::InvalidPrimitiveId(42);
-        assert_eq!(format!("{}", err), "Invalid primitive ID: 42");
+        assert_eq!(format!("{err}"), "Invalid primitive ID: 42");
 
         let err = SigmaError::StackOverflow;
-        assert_eq!(format!("{}", err), "Stack overflow during execution");
+        assert_eq!(format!("{err}"), "Stack overflow during execution");
 
         let err = SigmaError::StackUnderflow;
-        assert_eq!(format!("{}", err), "Stack underflow during execution");
+        assert_eq!(format!("{err}"), "Stack underflow during execution");
     }
 
     #[test]
@@ -515,7 +512,7 @@ mod tests {
         ];
 
         for (error, expected_variant) in errors {
-            let debug_str = format!("{:?}", error);
+            let debug_str = format!("{error:?}");
             assert!(debug_str.contains(expected_variant));
         }
     }

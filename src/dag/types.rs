@@ -177,8 +177,7 @@ impl CompiledDag {
         for &result_node_id in self.rule_results.values() {
             if result_node_id as usize >= self.nodes.len() {
                 return Err(SigmaError::CompilationError(format!(
-                    "Invalid result node: {}",
-                    result_node_id
+                    "Invalid result node: {result_node_id}"
                 )));
             }
         }
@@ -455,19 +454,19 @@ mod tests {
     #[test]
     fn test_node_type_debug() {
         let primitive = NodeType::Primitive { primitive_id: 42 };
-        let debug_str = format!("{:?}", primitive);
+        let debug_str = format!("{primitive:?}");
         assert!(debug_str.contains("Primitive"));
         assert!(debug_str.contains("42"));
 
         let logical = NodeType::Logical {
             operation: LogicalOp::And,
         };
-        let debug_str = format!("{:?}", logical);
+        let debug_str = format!("{logical:?}");
         assert!(debug_str.contains("Logical"));
         assert!(debug_str.contains("And"));
 
         let result = NodeType::Result { rule_id: 123 };
-        let debug_str = format!("{:?}", result);
+        let debug_str = format!("{result:?}");
         assert!(debug_str.contains("Result"));
         assert!(debug_str.contains("123"));
     }
@@ -605,7 +604,7 @@ mod tests {
     #[test]
     fn test_dag_node_debug() {
         let node = DagNode::new(42, NodeType::Primitive { primitive_id: 123 });
-        let debug_str = format!("{:?}", node);
+        let debug_str = format!("{node:?}");
         assert!(debug_str.contains("42"));
         assert!(debug_str.contains("Primitive"));
         assert!(debug_str.contains("123"));
@@ -810,7 +809,7 @@ mod tests {
     #[test]
     fn test_compiled_dag_debug() {
         let dag = create_test_dag();
-        let debug_str = format!("{:?}", dag);
+        let debug_str = format!("{dag:?}");
         assert!(debug_str.contains("CompiledDag"));
         assert!(debug_str.contains("nodes"));
         assert!(debug_str.contains("execution_order"));
@@ -886,7 +885,7 @@ mod tests {
     fn test_dag_statistics_debug() {
         let dag = create_test_dag();
         let stats = dag.statistics();
-        let debug_str = format!("{:?}", stats);
+        let debug_str = format!("{stats:?}");
 
         assert!(debug_str.contains("DagStatistics"));
         assert!(debug_str.contains("total_nodes"));

@@ -441,8 +441,8 @@ fn benchmark_real_world_prefilter_effectiveness(c: &mut Criterion) {
         .filter(|p| p.match_type.as_str() == "regex")
         .count();
 
-    println!("  Literal patterns: {} (prefilter eligible)", literal_count);
-    println!("  Regex patterns: {} (prefilter excluded)", regex_count);
+    println!("  Literal patterns: {literal_count} (prefilter eligible)");
+    println!("  Regex patterns: {regex_count} (prefilter excluded)");
 
     // Create engines with and without prefilter
     let config_with_prefilter = DagEngineConfig {
@@ -614,8 +614,7 @@ fn benchmark_soc_realistic_selectivity(c: &mut Criterion) {
     }
     let actual_selectivity = (filtered_count as f64 / total_events as f64) * 100.0;
     println!(
-        "✅ Verified selectivity: {:.1}% filtered out ({}/{})",
-        actual_selectivity, filtered_count, total_events
+        "✅ Verified selectivity: {actual_selectivity:.1}% filtered out ({filtered_count}/{total_events})"
     );
 
     let mut group = c.benchmark_group("soc_realistic_95_5_split");

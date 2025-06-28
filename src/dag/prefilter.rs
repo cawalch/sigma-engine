@@ -563,8 +563,7 @@ impl PatternBuilder {
                 .build(&all_patterns)
                 .map_err(|e| {
                     SigmaError::CompilationError(format!(
-                        "Failed to build AhoCorasick automaton: {}",
-                        e
+                        "Failed to build AhoCorasick automaton: {e}"
                     ))
                 })?;
 
@@ -1161,8 +1160,7 @@ mod tests {
                 ..
             } => {
                 println!(
-                    "Using simple strategy - Exact patterns: {:?}, Contains patterns: {:?}",
-                    exact_patterns, contains_patterns
+                    "Using simple strategy - Exact patterns: {exact_patterns:?}, Contains patterns: {contains_patterns:?}"
                 );
                 assert_eq!(exact_patterns.len() + contains_patterns.len(), 2);
                 assert!(

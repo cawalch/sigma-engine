@@ -47,7 +47,7 @@ fn test_prefilter_integration() {
 
     println!("Testing non-matching event...");
     let result = engine_with_prefilter.evaluate(&non_matching_event).unwrap();
-    println!("Result: {:?}", result);
+    println!("Result: {result:?}");
     assert!(result.matched_rules.is_empty());
 
     // Test event that will match
@@ -59,7 +59,7 @@ fn test_prefilter_integration() {
 
     println!("Testing matching event...");
     let result = engine_with_prefilter.evaluate(&matching_event).unwrap();
-    println!("Result: {:?}", result);
+    println!("Result: {result:?}");
     // Note: This might not match because we don't have proper rule compilation
     // But it should not panic
 

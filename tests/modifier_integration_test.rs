@@ -43,8 +43,7 @@ fn test_comprehensive_modifiers_registration() {
     for modifier in expected_modifiers {
         assert!(
             modifier_registry.contains_key(modifier),
-            "Missing modifier: {}",
-            modifier
+            "Missing modifier: {modifier}"
         );
     }
 
@@ -134,16 +133,14 @@ fn test_compiler_modifier_parsing() {
 
     for (input, expected) in test_cases {
         let (field, match_type, modifiers) = compiler.parse_field_with_modifiers(input);
-        assert_eq!(field, expected.0, "Field mismatch for input: {}", input);
+        assert_eq!(field, expected.0, "Field mismatch for input: {input}");
         assert_eq!(
             match_type, expected.1,
-            "Match type mismatch for input: {}",
-            input
+            "Match type mismatch for input: {input}"
         );
         assert_eq!(
             modifiers, expected.2,
-            "Modifiers mismatch for input: {}",
-            input
+            "Modifiers mismatch for input: {input}"
         );
     }
 }

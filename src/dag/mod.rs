@@ -11,7 +11,7 @@
 //! use sigma_engine::ir::CompiledRuleset;
 //!
 //! // Create DAG engine from compiled ruleset
-//! let engine = DagEngine::from_ruleset(compiled_ruleset)?;
+//! let engine = DagEngine::from_rules(&rules)?;
 //!
 //! // Execute against event data
 //! let results = engine.evaluate(&event_data)?;
@@ -167,7 +167,7 @@ mod tests {
 
         for i in 0..150 {
             let primitive = Primitive::new(
-                format!("field{}", i),
+                format!("field{i}"),
                 "equals".to_string(),
                 vec![format!("value{}", i)],
                 Vec::new(),

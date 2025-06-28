@@ -227,8 +227,7 @@ impl<'a> EventContext<'a> {
             Some(Value::Bool(b)) => Ok(Some(b.to_string())),
             Some(Value::Null) => Ok(None),
             Some(_) => Err(SigmaError::FieldExtractionError(format!(
-                "Field '{}' has unsupported type",
-                field
+                "Field '{field}' has unsupported type"
             ))),
             None => Ok(None),
         }
@@ -252,8 +251,7 @@ impl<'a> EventContext<'a> {
             Value::Bool(b) => Ok(Some(b.to_string())),
             Value::Null => Ok(None),
             _ => Err(SigmaError::FieldExtractionError(format!(
-                "Nested field '{}' has unsupported type",
-                field_path
+                "Nested field '{field_path}' has unsupported type"
             ))),
         }
     }

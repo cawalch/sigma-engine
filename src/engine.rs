@@ -53,7 +53,7 @@ use serde_json::Value;
 /// let ruleset = compiler.compile_ruleset(&rules)?;
 ///
 /// // Create engine for online evaluation
-/// let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+/// let mut engine = SigmaEngine::from_rules(&rules)?;
 ///
 /// // Evaluate events
 /// let event = serde_json::from_str(r#"{"EventID": "4624"}"#)?;
@@ -74,7 +74,7 @@ use serde_json::Value;
 ///
 /// // Configure for maximum performance
 /// let config = DagEngineConfig::high_performance();
-/// let mut engine = SigmaEngine::from_ruleset_with_config(ruleset, config)?;
+/// let mut engine = SigmaEngine::from_rules_with_config(&rules, config)?;
 ///
 /// // Process events with optimal performance
 /// let result = engine.evaluate(&event)?;
@@ -86,7 +86,7 @@ use serde_json::Value;
 ///
 /// let mut compiler = Compiler::new();
 /// let ruleset = compiler.compile_ruleset(&rules)?;
-/// let mut engine = SigmaEngine::from_ruleset(ruleset)?;
+/// let mut engine = SigmaEngine::from_rules(&rules)?;
 ///
 /// // Process multiple events efficiently
 /// let events = vec![event1, event2, event3];
@@ -218,32 +218,6 @@ impl SigmaEngine {
         config: DagEngineConfig,
     ) -> Result<Self> {
         DagEngine::from_rules_with_compiler(rule_yamls, compiler, config)
-            .map(|dag_engine| Self { dag_engine })
-    }
-
-    /// Create a new SIGMA engine from a compiled ruleset.
-    ///
-    /// **Note**: This method is deprecated because it doesn't create proper rule result nodes.
-    /// Use `from_rules()` instead for correct rule matching behavior.
-    ///
-    /// # Arguments
-    /// * `ruleset` - The compiled ruleset containing primitives and rules
-    ///
-    /// # Returns
-    /// A new SigmaEngine instance ready for evaluation.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use sigma_engine::{Compiler, SigmaEngine};
-    ///
-    /// let mut compiler = Compiler::new();
-    /// let ruleset = compiler.compile_ruleset(&rules)?;
-    /// let engine = SigmaEngine::from_ruleset(ruleset)?;
-    /// ```
-    #[deprecated(note = "Use from_rules() instead for proper rule matching")]
-    pub fn from_ruleset(ruleset: CompiledRuleset) -> Result<Self> {
-        DagEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default())
             .map(|dag_engine| Self { dag_engine })
     }
 
@@ -476,7 +450,7 @@ detection:
             primitive_evaluations: 5,
         };
 
-        let debug_str = format!("{:?}", result);
+        let debug_str = format!("{result:?}");
         assert!(debug_str.contains("matched_rules"));
         assert!(debug_str.contains("nodes_evaluated"));
         assert!(debug_str.contains("primitive_evaluations"));

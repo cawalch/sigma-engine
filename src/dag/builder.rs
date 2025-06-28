@@ -267,8 +267,7 @@ impl DagBuilder {
         for &rule_id in self.rule_result_nodes.keys() {
             if !self.rule_result_nodes.contains_key(&rule_id) {
                 return Err(SigmaError::CompilationError(format!(
-                    "Missing result node for rule: {}",
-                    rule_id
+                    "Missing result node for rule: {rule_id}"
                 )));
             }
         }
