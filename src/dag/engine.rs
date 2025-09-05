@@ -198,8 +198,8 @@ impl DagEngineConfig {
         }
     }
 
-    /// Create a configuration optimized for streaming workloads.
-    pub fn streaming_optimized() -> Self {
+    /// Create a configuration for streaming workloads.
+    pub fn streaming() -> Self {
         Self {
             enable_optimization: true,
             optimization_level: 3,
@@ -378,7 +378,7 @@ impl DagEngine {
 
         // Build prefilter if enabled
         let prefilter = if config.enable_prefilter {
-            let prefilter_config = super::prefilter::PrefilterConfig::sigma_optimized();
+            let prefilter_config = super::prefilter::PrefilterConfig::sigma();
             match LiteralPrefilter::with_config(compiler.primitives(), prefilter_config) {
                 Ok(filter) => {
                     if filter.stats().pattern_count > 0 {
@@ -428,7 +428,7 @@ impl DagEngine {
 
         // Build prefilter if enabled
         let prefilter = if config.enable_prefilter {
-            let prefilter_config = super::prefilter::PrefilterConfig::sigma_optimized();
+            let prefilter_config = super::prefilter::PrefilterConfig::sigma();
             match LiteralPrefilter::with_config(compiler.primitives(), prefilter_config) {
                 Ok(filter) => {
                     if filter.stats().pattern_count > 0 {
@@ -461,8 +461,8 @@ impl DagEngine {
     ) -> Result<Self> {
         // Build prefilter if enabled
         let prefilter = if config.enable_prefilter {
-            // Use SIGMA-optimized configuration for better pattern extraction
-            let prefilter_config = super::prefilter::PrefilterConfig::sigma_optimized();
+            // Use SIGMA configuration for better pattern extraction
+            let prefilter_config = super::prefilter::PrefilterConfig::sigma();
             match LiteralPrefilter::with_config(&ruleset.primitives, prefilter_config) {
                 Ok(filter) => {
                     if filter.stats().pattern_count > 0 {
@@ -504,8 +504,6 @@ impl DagEngine {
 
     /// Evaluate the DAG against an event and return matches.
     pub fn evaluate(&mut self, event: &Value) -> Result<DagEvaluationResult> {
-        let start_time = std::time::Instant::now();
-
         // Get or create evaluator
         let mut evaluator = match self.evaluator.take() {
             Some(mut eval) => {
@@ -524,10 +522,6 @@ impl DagEngine {
 
         // Store evaluator for reuse
         self.evaluator = Some(evaluator);
-
-        // Add timing information if needed
-        let _elapsed = start_time.elapsed();
-        // TODO: Add timing to result if metrics are enabled
 
         Ok(result)
     }
@@ -854,8 +848,8 @@ mod tests {
     }
 
     #[test]
-    fn test_dag_engine_config_streaming_optimized() {
-        let config = DagEngineConfig::streaming_optimized();
+    fn test_dag_engine_config_streaming() {
+        let config = DagEngineConfig::streaming();
         assert!(config.enable_optimization);
         assert_eq!(config.optimization_level, 3);
         assert!(config.enable_parallel_processing);

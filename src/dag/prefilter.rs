@@ -220,9 +220,9 @@ impl PrefilterConfig {
         }
     }
 
-    /// Create a configuration optimized for SIGMA security rules
+    /// Create a configuration for SIGMA security rules
     /// Balanced approach for security monitoring scenarios
-    pub fn sigma_optimized() -> Self {
+    pub fn sigma() -> Self {
         Self {
             case_insensitive: false, // SIGMA rules are typically case-sensitive
             min_pattern_length: 1,   // Include EventIDs like "1", "2", etc.
@@ -1143,10 +1143,6 @@ mod tests {
 
         // Check the actual stats
         let stats = prefilter.stats();
-        println!(
-            "Prefilter stats: pattern_count={}, field_count={}, selectivity={:.2}",
-            stats.pattern_count, stats.field_count, stats.estimated_selectivity
-        );
 
         // For small test cases, just verify basic functionality
         assert_eq!(stats.pattern_count, 2);
@@ -1159,9 +1155,6 @@ mod tests {
                 contains_patterns,
                 ..
             } => {
-                println!(
-                    "Using simple strategy - Exact patterns: {exact_patterns:?}, Contains patterns: {contains_patterns:?}"
-                );
                 assert_eq!(exact_patterns.len() + contains_patterns.len(), 2);
                 assert!(
                     exact_patterns.contains(&"4624".to_string())
@@ -1311,10 +1304,6 @@ mod tests {
         match &prefilter.strategy {
             PrefilterStrategy::AhoCorasick { patterns, .. } => {
                 assert_eq!(patterns.len(), 25);
-                println!(
-                    "✓ Using AhoCorasick strategy for {} patterns",
-                    patterns.len()
-                );
             }
             PrefilterStrategy::Simple { .. } => {
                 panic!("Should use AhoCorasick strategy for 25 patterns");
@@ -1369,10 +1358,6 @@ mod tests {
             "ProcessName": "explorer.exe",
             "DestinationIP": "192.168.1.1"
         });
-        println!(
-            "Normal event matches prefilter: {}",
-            prefilter.matches(&normal_event).unwrap()
-        );
         assert!(
             !prefilter.matches(&normal_event).unwrap(),
             "Normal event should be filtered out"
@@ -1384,25 +1369,17 @@ mod tests {
             "ProcessName": "powershell.exe",
             "DestinationIP": "10.0.1.1"
         });
-        println!(
-            "Suspicious event matches prefilter: {}",
-            prefilter.matches(&suspicious_event).unwrap()
-        );
         assert!(
             prefilter.matches(&suspicious_event).unwrap(),
             "Suspicious event should pass through"
         );
 
         // Test event with suspicious IP (this might be the issue!)
-        let ip_event = json!({
+        let _ip_event = json!({
             "EventID": "1",
             "ProcessName": "explorer.exe",
             "DestinationIP": "127.0.0.1"  // This IP is in the suspicious list!
         });
-        println!(
-            "IP event matches prefilter: {}",
-            prefilter.matches(&ip_event).unwrap()
-        );
         // This will likely return true, showing the benchmark data issue
     }
 }

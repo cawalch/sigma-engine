@@ -298,7 +298,8 @@ impl CompiledPrimitive {
             }
         };
 
-        // For now, create empty modifier chain (TODO: implement modifiers)
+        // Note: This method bypasses the MatcherBuilder's proper modifier compilation.
+        // For full modifier support, use MatcherBuilder::compile() instead.
         let modifier_chain: Vec<ModifierFn> = Vec::new();
 
         Ok(Self::new(

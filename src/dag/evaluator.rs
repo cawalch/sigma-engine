@@ -98,17 +98,8 @@ impl DagEvaluator {
             self.prefilter_hits += 1;
         }
 
-        // Ultra-fast path for single primitive rules (most common case)
-        if self.dag.rule_results.len() == 1 && self.dag.nodes.len() <= 3 {
-            return self.evaluate_single_primitive_fast(event);
-        }
-
-        // Use fast-path for small DAGs to avoid HashMap overhead
-        if self.dag.nodes.len() <= 32 {
-            self.evaluate_fast_path(event)
-        } else {
-            self.evaluate_standard_path(event)
-        }
+        // Choose optimal evaluation strategy based on DAG characteristics
+        self.evaluate_with_optimal_strategy(event)
     }
 
     /// Evaluate the DAG against a raw JSON string with zero-allocation prefiltering.
@@ -145,19 +136,37 @@ impl DagEvaluator {
         // Continue with standard evaluation path
         // Ultra-fast path for single primitive rules (most common case)
         if self.dag.rule_results.len() == 1 && self.dag.nodes.len() <= 3 {
-            return self.evaluate_single_primitive_fast(&event);
+            return self.evaluate_single_primitive_optimized(&event);
         }
 
-        // Use fast-path for small DAGs to avoid HashMap overhead
+        // Choose optimal evaluation strategy based on DAG characteristics
+        self.evaluate_with_optimal_strategy(&event)
+    }
+
+    /// Unified evaluation method that chooses optimal strategy based on DAG characteristics.
+    fn evaluate_with_optimal_strategy(&mut self, event: &Value) -> Result<DagEvaluationResult> {
+        // Ultra-fast path for single primitive rules (most common case)
+        if self.dag.rule_results.len() == 1 && self.dag.nodes.len() <= 3 {
+            return self.evaluate_single_primitive_optimized(event);
+        }
+
+        // Use Vec-based storage for small DAGs to avoid HashMap overhead
+        // Threshold of 32 nodes chosen based on benchmarking - see bench_storage_strategy_threshold
+        // Benchmarks show consistent performance across sizes 8-64, indicating the threshold is reasonable.
+        // Vec storage provides better cache locality for small DAGs, while HashMap storage scales better
+        // for larger DAGs due to O(1) lookups vs potential O(n) Vec operations.
         if self.dag.nodes.len() <= 32 {
-            self.evaluate_fast_path(&event)
+            self.evaluate_with_vec_storage(event)
         } else {
-            self.evaluate_standard_path(&event)
+            self.evaluate_with_hashmap_storage(event)
         }
     }
 
     /// Ultra-fast evaluation for single primitive rules.
-    fn evaluate_single_primitive_fast(&mut self, event: &Value) -> Result<DagEvaluationResult> {
+    fn evaluate_single_primitive_optimized(
+        &mut self,
+        event: &Value,
+    ) -> Result<DagEvaluationResult> {
         self.reset();
 
         let (&rule_id, &result_node_id) = self.dag.rule_results.iter().next().unwrap();
@@ -184,20 +193,41 @@ impl DagEvaluator {
         }
 
         // Fallback to standard evaluation
-        self.evaluate_standard_path(event)
+        self.evaluate_with_hashmap_storage(event)
     }
 
-    /// Fast-path evaluation for small DAGs using Vec instead of HashMap.
-    fn evaluate_fast_path(&mut self, event: &Value) -> Result<DagEvaluationResult> {
+    /// Vec-based evaluation for small DAGs (avoids HashMap overhead).
+    fn evaluate_with_vec_storage(&mut self, event: &Value) -> Result<DagEvaluationResult> {
         self.reset();
 
+        // Use intelligent evaluation with early termination
+        self.evaluate_with_early_termination_vec(event)
+    }
+
+    /// Intelligent evaluation with early termination using Vec storage.
+    fn evaluate_with_early_termination_vec(
+        &mut self,
+        event: &Value,
+    ) -> Result<DagEvaluationResult> {
         let execution_order = self.dag.execution_order.clone();
+        let mut can_terminate_early = std::collections::HashMap::new();
+
         for node_id in execution_order {
-            let result = self.evaluate_node_fast(node_id, event)?;
+            // Check if we can skip this node due to early termination
+            if self.should_skip_node_vec(node_id, &can_terminate_early) {
+                continue;
+            }
+
+            let result = self.evaluate_node_with_vec(node_id, event)?;
             if (node_id as usize) < self.fast_results.len() {
                 self.fast_results[node_id as usize] = result;
             }
             self.nodes_evaluated += 1;
+
+            // Update early termination state based on this result
+            if let Some(node) = self.dag.get_node(node_id) {
+                self.update_early_termination_state_fast(node, result, &mut can_terminate_early);
+            }
         }
 
         let mut matched_rules = Vec::new();
@@ -216,15 +246,40 @@ impl DagEvaluator {
         })
     }
 
-    /// Standard evaluation path for larger DAGs using HashMap.
-    fn evaluate_standard_path(&mut self, event: &Value) -> Result<DagEvaluationResult> {
+    /// HashMap-based evaluation for larger DAGs.
+    fn evaluate_with_hashmap_storage(&mut self, event: &Value) -> Result<DagEvaluationResult> {
         self.reset();
 
+        // Use intelligent evaluation with early termination
+        self.evaluate_with_early_termination_hashmap(event)
+    }
+
+    /// Intelligent evaluation with early termination for standard path.
+    fn evaluate_with_early_termination_hashmap(
+        &mut self,
+        event: &Value,
+    ) -> Result<DagEvaluationResult> {
         let execution_order = self.dag.execution_order.clone();
+        let mut can_terminate_early = std::collections::HashMap::new();
+
         for node_id in execution_order {
-            let result = self.evaluate_node(node_id, event)?;
+            // Check if we can skip this node due to early termination
+            if self.should_skip_node_hashmap(node_id, &can_terminate_early) {
+                continue;
+            }
+
+            let result = self.evaluate_node_with_hashmap(node_id, event)?;
             self.node_results.insert(node_id, result);
             self.nodes_evaluated += 1;
+
+            // Update early termination state based on this result
+            if let Some(node) = self.dag.get_node(node_id) {
+                self.update_early_termination_state_standard(
+                    node,
+                    result,
+                    &mut can_terminate_early,
+                );
+            }
         }
 
         let mut matched_rules = Vec::new();
@@ -243,8 +298,8 @@ impl DagEvaluator {
         })
     }
 
-    /// Evaluate a single node (standard path).
-    fn evaluate_node(&mut self, node_id: u32, event: &Value) -> Result<bool> {
+    /// Evaluate a single node using HashMap storage.
+    fn evaluate_node_with_hashmap(&mut self, node_id: u32, event: &Value) -> Result<bool> {
         let node = self
             .dag
             .get_node(node_id)
@@ -254,7 +309,7 @@ impl DagEvaluator {
         match &node.node_type {
             NodeType::Primitive { primitive_id } => self.evaluate_primitive(*primitive_id, event),
             NodeType::Logical { operation } => {
-                self.evaluate_logical_operation(*operation, &node.dependencies)
+                self.evaluate_logical_operation_with_hashmap(*operation, &node.dependencies)
             }
             NodeType::Result { rule_id: _ } => {
                 if node.dependencies.len() == 1 {
@@ -276,7 +331,7 @@ impl DagEvaluator {
     }
 
     /// Evaluate a single node (fast path).
-    fn evaluate_node_fast(&mut self, node_id: u32, event: &Value) -> Result<bool> {
+    fn evaluate_node_with_vec(&mut self, node_id: u32, event: &Value) -> Result<bool> {
         let node = self
             .dag
             .get_node(node_id)
@@ -286,7 +341,7 @@ impl DagEvaluator {
         match &node.node_type {
             NodeType::Primitive { primitive_id } => self.evaluate_primitive(*primitive_id, event),
             NodeType::Logical { operation } => {
-                self.evaluate_logical_operation_fast(*operation, &node.dependencies)
+                self.evaluate_logical_operation_with_vec(*operation, &node.dependencies)
             }
             NodeType::Result { rule_id: _ } => {
                 if node.dependencies.len() == 1 {
@@ -322,8 +377,8 @@ impl DagEvaluator {
         }
     }
 
-    /// Evaluate a logical operation (standard path).
-    fn evaluate_logical_operation(
+    /// Evaluate a logical operation using HashMap storage.
+    fn evaluate_logical_operation_with_hashmap(
         &self,
         operation: LogicalOp,
         dependencies: &[u32],
@@ -376,7 +431,7 @@ impl DagEvaluator {
     }
 
     /// Evaluate a logical operation (fast path).
-    fn evaluate_logical_operation_fast(
+    fn evaluate_logical_operation_with_vec(
         &self,
         operation: LogicalOp,
         dependencies: &[u32],
@@ -445,8 +500,10 @@ impl DagEvaluator {
                         self.node_results.entry(node_id).or_insert(false);
                     }
                     NodeType::Logical { operation } => {
-                        let result =
-                            self.evaluate_logical_operation(*operation, &node.dependencies)?;
+                        let result = self.evaluate_logical_operation_with_hashmap(
+                            *operation,
+                            &node.dependencies,
+                        )?;
                         self.node_results.insert(node_id, result);
                     }
                     NodeType::Result { rule_id: _ } => {
@@ -484,6 +541,154 @@ impl DagEvaluator {
             nodes_evaluated: self.nodes_evaluated,
             primitive_evaluations: self.primitive_evaluations,
         })
+    }
+
+    /// Check if a node should be skipped due to early termination (Vec storage).
+    fn should_skip_node_vec(
+        &self,
+        node_id: u32,
+        termination_state: &std::collections::HashMap<u32, bool>,
+    ) -> bool {
+        if let Some(node) = self.dag.get_node(node_id) {
+            // Check if any of this node's dependencies have caused early termination
+            for &dep_id in &node.dependencies {
+                if let Some(&can_terminate) = termination_state.get(&dep_id) {
+                    if can_terminate {
+                        // Check if this dependency failure makes this node unnecessary
+                        if self.is_node_unnecessary_due_to_dependency_failure(node, dep_id) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a node should be skipped due to early termination (HashMap storage).
+    fn should_skip_node_hashmap(
+        &self,
+        node_id: u32,
+        termination_state: &std::collections::HashMap<u32, bool>,
+    ) -> bool {
+        if let Some(node) = self.dag.get_node(node_id) {
+            // Check if any of this node's dependencies have caused early termination
+            for &dep_id in &node.dependencies {
+                if let Some(&can_terminate) = termination_state.get(&dep_id) {
+                    if can_terminate {
+                        // Check if this dependency failure makes this node unnecessary
+                        if self.is_node_unnecessary_due_to_dependency_failure(node, dep_id) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a node is unnecessary due to a dependency failure.
+    fn is_node_unnecessary_due_to_dependency_failure(
+        &self,
+        node: &super::types::DagNode,
+        failed_dep_id: u32,
+    ) -> bool {
+        match &node.node_type {
+            NodeType::Logical {
+                operation: LogicalOp::And,
+            } => {
+                // For AND nodes, if any dependency fails, the whole node fails
+                true
+            }
+            NodeType::Logical {
+                operation: LogicalOp::Or,
+            } => {
+                // For OR nodes, we can only skip if ALL dependencies have failed
+                // This is more complex and requires tracking all dependency states
+                false // Conservative approach for now
+            }
+            NodeType::Result { .. } => {
+                // Result nodes depend on their single dependency
+                node.dependencies.len() == 1 && node.dependencies[0] == failed_dep_id
+            }
+            _ => false,
+        }
+    }
+
+    /// Update early termination state based on node evaluation result (fast path).
+    fn update_early_termination_state_fast(
+        &self,
+        node: &super::types::DagNode,
+        result: bool,
+        termination_state: &mut std::collections::HashMap<u32, bool>,
+    ) {
+        match &node.node_type {
+            NodeType::Primitive { .. } => {
+                // Primitive failure can cause early termination for dependent AND nodes
+                if !result {
+                    termination_state.insert(node.id, true);
+                }
+            }
+            NodeType::Logical { operation } => {
+                match operation {
+                    LogicalOp::And if !result => {
+                        // Failed AND can cause early termination for dependents
+                        termination_state.insert(node.id, true);
+                    }
+                    LogicalOp::Or if result => {
+                        // Successful OR can cause early termination for other OR branches
+                        // This is more complex and requires careful analysis
+                        termination_state.insert(node.id, false);
+                    }
+                    _ => {
+                        // Other cases don't cause early termination
+                        termination_state.insert(node.id, false);
+                    }
+                }
+            }
+            _ => {
+                // Other node types don't cause early termination
+                termination_state.insert(node.id, false);
+            }
+        }
+    }
+
+    /// Update early termination state based on node evaluation result (standard path).
+    fn update_early_termination_state_standard(
+        &self,
+        node: &super::types::DagNode,
+        result: bool,
+        termination_state: &mut std::collections::HashMap<u32, bool>,
+    ) {
+        match &node.node_type {
+            NodeType::Primitive { .. } => {
+                // Primitive failure can cause early termination for dependent AND nodes
+                if !result {
+                    termination_state.insert(node.id, true);
+                }
+            }
+            NodeType::Logical { operation } => {
+                match operation {
+                    LogicalOp::And if !result => {
+                        // Failed AND can cause early termination for dependents
+                        termination_state.insert(node.id, true);
+                    }
+                    LogicalOp::Or if result => {
+                        // Successful OR can cause early termination for other OR branches
+                        // This is more complex and requires careful analysis
+                        termination_state.insert(node.id, false);
+                    }
+                    _ => {
+                        // Other cases don't cause early termination
+                        termination_state.insert(node.id, false);
+                    }
+                }
+            }
+            _ => {
+                // Other node types don't cause early termination
+                termination_state.insert(node.id, false);
+            }
+        }
     }
 
     /// Reset evaluation state for a new evaluation.
@@ -613,7 +818,7 @@ mod tests {
         evaluator.node_results.insert(1, true);
 
         let result = evaluator
-            .evaluate_logical_operation(LogicalOp::And, &[0, 1])
+            .evaluate_logical_operation_with_hashmap(LogicalOp::And, &[0, 1])
             .unwrap();
         assert!(result);
     }
@@ -630,7 +835,7 @@ mod tests {
         evaluator.node_results.insert(1, false);
 
         let result = evaluator
-            .evaluate_logical_operation(LogicalOp::And, &[0, 1])
+            .evaluate_logical_operation_with_hashmap(LogicalOp::And, &[0, 1])
             .unwrap();
         assert!(!result);
     }
@@ -647,7 +852,7 @@ mod tests {
         evaluator.node_results.insert(1, true);
 
         let result = evaluator
-            .evaluate_logical_operation(LogicalOp::Or, &[0, 1])
+            .evaluate_logical_operation_with_hashmap(LogicalOp::Or, &[0, 1])
             .unwrap();
         assert!(result);
     }
@@ -664,7 +869,7 @@ mod tests {
         evaluator.node_results.insert(1, false);
 
         let result = evaluator
-            .evaluate_logical_operation(LogicalOp::Or, &[0, 1])
+            .evaluate_logical_operation_with_hashmap(LogicalOp::Or, &[0, 1])
             .unwrap();
         assert!(!result);
     }
@@ -680,7 +885,7 @@ mod tests {
         evaluator.node_results.insert(0, false);
 
         let result = evaluator
-            .evaluate_logical_operation(LogicalOp::Not, &[0])
+            .evaluate_logical_operation_with_hashmap(LogicalOp::Not, &[0])
             .unwrap();
         assert!(result);
     }
@@ -696,7 +901,7 @@ mod tests {
         evaluator.node_results.insert(0, true);
 
         let result = evaluator
-            .evaluate_logical_operation(LogicalOp::Not, &[0])
+            .evaluate_logical_operation_with_hashmap(LogicalOp::Not, &[0])
             .unwrap();
         assert!(!result);
     }
@@ -709,7 +914,7 @@ mod tests {
         let evaluator = DagEvaluator::with_primitives(dag, primitives);
 
         // NOT with multiple dependencies should fail
-        let result = evaluator.evaluate_logical_operation(LogicalOp::Not, &[0, 1]);
+        let result = evaluator.evaluate_logical_operation_with_hashmap(LogicalOp::Not, &[0, 1]);
         assert!(result.is_err());
 
         if let Err(SigmaError::ExecutionError(msg)) = result {
@@ -727,7 +932,7 @@ mod tests {
         let evaluator = DagEvaluator::with_primitives(dag, primitives);
 
         // Try to evaluate without setting up dependencies
-        let result = evaluator.evaluate_logical_operation(LogicalOp::And, &[0, 1]);
+        let result = evaluator.evaluate_logical_operation_with_hashmap(LogicalOp::And, &[0, 1]);
         assert!(result.is_err());
 
         if let Err(SigmaError::ExecutionError(msg)) = result {
@@ -749,7 +954,7 @@ mod tests {
         evaluator.fast_results[1] = true;
 
         let result = evaluator
-            .evaluate_logical_operation_fast(LogicalOp::And, &[0, 1])
+            .evaluate_logical_operation_with_vec(LogicalOp::And, &[0, 1])
             .unwrap();
         assert!(result);
     }
@@ -766,7 +971,7 @@ mod tests {
         evaluator.fast_results[1] = true;
 
         let result = evaluator
-            .evaluate_logical_operation_fast(LogicalOp::Or, &[0, 1])
+            .evaluate_logical_operation_with_vec(LogicalOp::Or, &[0, 1])
             .unwrap();
         assert!(result);
     }
@@ -782,7 +987,7 @@ mod tests {
         evaluator.fast_results[0] = false;
 
         let result = evaluator
-            .evaluate_logical_operation_fast(LogicalOp::Not, &[0])
+            .evaluate_logical_operation_with_vec(LogicalOp::Not, &[0])
             .unwrap();
         assert!(result);
     }

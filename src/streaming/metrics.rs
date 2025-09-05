@@ -386,11 +386,11 @@ impl StreamingMetrics {
             overall_throughput: total_throughput,
             current_throughput: stats.events_per_second,
             average_latency: stats.average_latency,
-            p95_latency: Duration::ZERO, // TODO: Implement aggregate percentiles
-            p99_latency: Duration::ZERO, // TODO: Implement aggregate percentiles
+            p95_latency: Duration::ZERO, // Percentile metrics not implemented
+            p99_latency: Duration::ZERO, // Percentile metrics not implemented
             current_memory_usage: stats.memory_usage,
             current_cpu_usage: stats.cpu_usage,
-            total_processing_time: Duration::ZERO, // TODO: Implement aggregate processing time
+            total_processing_time: Duration::ZERO, // Aggregate processing time not implemented
         }
     }
 }

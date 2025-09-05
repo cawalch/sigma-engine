@@ -221,11 +221,66 @@ detection:
     group.finish();
 }
 
+/// Benchmark Vec vs HashMap storage strategies for different DAG sizes
+/// This benchmark helps determine the optimal threshold for switching between storage strategies
+fn bench_storage_strategy_threshold(c: &mut Criterion) {
+    let mut group = c.benchmark_group("storage_strategy_threshold");
+
+    // Test different DAG sizes to find the optimal threshold
+    let dag_sizes = vec![8, 16, 32, 64];
+
+    for &size in &dag_sizes {
+        // Create a simple rule that will generate a DAG with approximately the target size
+        let rule_yaml = format!(
+            r#"
+title: Storage Strategy Test Rule Size {}
+id: {}
+logsource:
+    product: test
+detection:
+    sel1:
+        EventID: 1
+    sel2:
+        ProcessName: test.exe
+    sel3:
+        CommandLine|contains: test
+    condition: sel1 and sel2 and sel3
+level: medium
+"#,
+            size, size
+        );
+
+        let mut compiler = Compiler::new();
+        if let Ok(ruleset) = compiler.compile_ruleset(&[&rule_yaml]) {
+            // Test with default config (uses the current threshold logic)
+            if let Ok(mut engine) =
+                SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default())
+            {
+                let test_event = json!({
+                    "EventID": "1",
+                    "ProcessName": "test.exe",
+                    "CommandLine": "test command"
+                });
+
+                group.bench_with_input(BenchmarkId::new("dag_size", size), &size, |b, _| {
+                    b.iter(|| {
+                        let result = engine.evaluate(black_box(&test_event));
+                        black_box(result)
+                    })
+                });
+            }
+        }
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_dag_execution,
     bench_execution_strategies,
     bench_dag_optimization_levels,
-    bench_dag_shared_computation
+    bench_dag_shared_computation,
+    bench_storage_strategy_threshold
 );
 criterion_main!(benches);

@@ -75,5 +75,3 @@ pub use advanced::{
     create_fuzzy_match as create_advanced_fuzzy_match,
     create_range_match as create_advanced_range_match,
 };
-
-// Enterprise features removed - they were not part of core functionality
