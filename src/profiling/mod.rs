@@ -159,8 +159,12 @@ impl ZeroAllocationScope {
 
     pub fn validate(&self) -> Result<(), AllocationViolation> {
         let current_stats = get_tracker().get_stats();
-        let net_allocations = current_stats.allocations - self.initial_stats.allocations;
-        let net_bytes = current_stats.bytes_allocated - self.initial_stats.bytes_allocated;
+        let net_allocations = current_stats
+            .allocations
+            .saturating_sub(self.initial_stats.allocations);
+        let net_bytes = current_stats
+            .bytes_allocated
+            .saturating_sub(self.initial_stats.bytes_allocated);
 
         if net_allocations > 0 {
             Err(AllocationViolation {
@@ -216,9 +220,12 @@ impl PerformanceMeasurement {
         PerformanceResult {
             duration: end_time.duration_since(self.start_time),
             cycles: end_cycles.saturating_sub(self.start_cycles),
-            allocations: end_allocations.allocations - self.start_allocations.allocations,
-            bytes_allocated: end_allocations.bytes_allocated
-                - self.start_allocations.bytes_allocated,
+            allocations: end_allocations
+                .allocations
+                .saturating_sub(self.start_allocations.allocations),
+            bytes_allocated: end_allocations
+                .bytes_allocated
+                .saturating_sub(self.start_allocations.bytes_allocated),
         }
     }
 }

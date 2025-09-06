@@ -172,8 +172,8 @@ impl BatchProcessor {
                 PerformanceStats {
                     events_per_second: batch_size as f64 / processing_latency.as_secs_f64(),
                     average_latency: processing_latency / batch_size as u32,
-                    memory_usage: 0, // TODO: Implement memory tracking
-                    cpu_usage: 0.0,  // TODO: Implement CPU tracking
+                    memory_usage: 0, // Memory tracking not implemented
+                    cpu_usage: 0.0,  // CPU tracking not implemented
                 },
             );
             streaming_results.push(result);
@@ -186,8 +186,8 @@ impl BatchProcessor {
         let aggregate_metrics = PerformanceStats {
             events_per_second: batch_size as f64 / processing_latency.as_secs_f64(),
             average_latency: processing_latency,
-            memory_usage: 0, // TODO: Implement memory tracking
-            cpu_usage: 0.0,  // TODO: Implement CPU tracking
+            memory_usage: 0, // Memory tracking not implemented
+            cpu_usage: 0.0,  // CPU tracking not implemented
         };
 
         Ok(BatchResult::new(

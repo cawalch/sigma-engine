@@ -100,7 +100,6 @@ detection:
     let result1 = engine1
         .evaluate(&test_event)
         .expect("Failed to evaluate rule 1");
-    println!("Rule 1 individual result: {result1:?}");
     assert!(
         !result1.matched_rules.is_empty(),
         "Rule 1 should match individually"
@@ -113,7 +112,6 @@ detection:
     let result2 = engine2
         .evaluate(&test_event)
         .expect("Failed to evaluate rule 2");
-    println!("Rule 2 individual result: {result2:?}");
     assert!(
         !result2.matched_rules.is_empty(),
         "Rule 2 should match individually"
@@ -128,7 +126,6 @@ detection:
     let result_multi = engine_multi
         .evaluate(&test_event)
         .expect("Failed to evaluate multiple rules");
-    println!("Multiple rules result: {result_multi:?}");
 
     // This assertion should pass but currently fails due to the bug
     assert_eq!(
@@ -167,10 +164,6 @@ detection:
     let dag_multi = compiler_multi
         .compile_rules_to_dag(&[rule1, rule2])
         .expect("Failed to compile multiple rules");
-    println!(
-        "Multiple rules DAG rule_results: {:?}",
-        dag_multi.rule_results
-    );
 
     // The bug is now fixed: both rules get unique IDs, so two entries in rule_results
     assert_eq!(
@@ -390,10 +383,9 @@ detection:
     let mut engine_rule1 =
         SigmaEngine::from_rules_with_compiler(&[rule1], compiler_rule1, config_rule1)
             .expect("Failed to create rule1 engine");
-    let result_rule1_individual = engine_rule1
+    let _result_rule1_individual = engine_rule1
         .evaluate(&event_rule1)
         .expect("Failed to evaluate rule1 individually");
-    println!("Rule1 individual result: {result_rule1_individual:?}");
 
     // Test multiple rules compilation
     let compiler = Compiler::with_field_mapping(field_mapping);

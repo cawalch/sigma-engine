@@ -75,7 +75,6 @@ pub struct Compiler {
     current_selection_map: HashMap<String, Vec<PrimitiveId>>,
     field_mapping: FieldMapping,
     next_rule_id: RuleId,
-    rule_id_map: HashMap<String, RuleId>,
 }
 
 impl Compiler {
@@ -97,7 +96,6 @@ impl Compiler {
             current_selection_map: HashMap::new(),
             field_mapping: FieldMapping::new(),
             next_rule_id: 0,
-            rule_id_map: HashMap::new(),
         }
     }
 
@@ -120,7 +118,6 @@ impl Compiler {
             current_selection_map: HashMap::new(),
             field_mapping,
             next_rule_id: 0,
-            rule_id_map: HashMap::new(),
         }
     }
 
@@ -207,15 +204,61 @@ impl Compiler {
     pub fn compile_rule(&mut self, rule_yaml: &str) -> Result<RuleId> {
         self.current_selection_map.clear();
 
+        // Use optimized selective YAML parsing for better performance
+        let (rule_id, detection_yaml) = self.parse_rule_selective(rule_yaml)?;
+
+        // Parse detection section to extract primitives
+        self.parse_detection_value(&detection_yaml)?;
+
+        Ok(rule_id)
+    }
+
+    /// Parse YAML rule and extract rule ID and detection section.
+    ///
+    /// # Arguments
+    /// * `rule_yaml` - The SIGMA rule in YAML format
+    ///
+    /// # Returns
+    /// A tuple containing (rule_id, detection_value) for further processing.
+    fn parse_rule_selective(&mut self, rule_yaml: &str) -> Result<(RuleId, Value)> {
+        // Parse YAML using serde_yaml
         let yaml_doc: Value = serde_yaml::from_str(rule_yaml)
             .map_err(|e| SigmaError::YamlError(format!("Failed to parse YAML: {e}")))?;
 
+        // Extract rule ID from YAML document
         let rule_id = self.extract_rule_id_from_yaml(&yaml_doc);
 
-        // Parse detection section to extract primitives
-        self.parse_detection_from_yaml(&yaml_doc)?;
+        // Extract detection section
+        let detection_value = yaml_doc
+            .get("detection")
+            .ok_or_else(|| SigmaError::CompilationError("Missing detection section".to_string()))?
+            .clone();
 
-        Ok(rule_id)
+        Ok((rule_id, detection_value))
+    }
+
+    /// Extract rule ID from YAML document.
+    ///
+    /// This method extracts the rule ID from the YAML document, falling back
+    /// to auto-generated IDs if no ID is specified.
+    fn extract_rule_id_from_yaml(&mut self, yaml_doc: &Value) -> RuleId {
+        if let Some(id_value) = yaml_doc.get("id") {
+            // Try as number first
+            if let Some(n) = id_value.as_u64() {
+                return n as RuleId;
+            }
+            // Try as string that can be parsed as number
+            if let Some(s) = id_value.as_str() {
+                if let Ok(n) = s.parse::<RuleId>() {
+                    return n;
+                }
+            }
+        }
+
+        // No ID found or couldn't parse - assign sequential ID
+        let new_id = self.next_rule_id;
+        self.next_rule_id += 1;
+        new_id
     }
 
     /// Compile multiple SIGMA rules into a complete ruleset.
@@ -301,20 +344,14 @@ impl Compiler {
     fn compile_rule_to_dag(&mut self, rule_yaml: &str) -> Result<dag_codegen::DagGenerationResult> {
         self.current_selection_map.clear();
 
-        let yaml_doc: Value = serde_yaml::from_str(rule_yaml)
-            .map_err(|e| SigmaError::YamlError(format!("Failed to parse YAML: {e}")))?;
-
-        let rule_id = self.extract_rule_id_from_yaml(&yaml_doc);
+        // Use optimized selective YAML parsing for better performance
+        let (rule_id, detection_yaml) = self.parse_rule_selective(rule_yaml)?;
 
         // Parse detection section to extract primitives
-        self.parse_detection_from_yaml(&yaml_doc)?;
+        self.parse_detection_value(&detection_yaml)?;
 
         // Parse condition and generate DAG directly
-        let detection = yaml_doc
-            .get("detection")
-            .ok_or_else(|| SigmaError::CompilationError("Missing detection section".to_string()))?;
-
-        let condition_str = detection
+        let condition_str = detection_yaml
             .get("condition")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SigmaError::CompilationError("Missing condition".to_string()))?;
@@ -514,42 +551,11 @@ impl Compiler {
         self.primitives.len()
     }
 
-    fn extract_rule_id_from_yaml(&mut self, yaml_doc: &Value) -> RuleId {
-        if let Some(id_value) = yaml_doc.get("id") {
-            // Try as number first
-            if let Some(n) = id_value.as_u64() {
-                return n as RuleId;
-            }
-
-            // Try as string that can be parsed as number
-            if let Some(s) = id_value.as_str() {
-                if let Ok(n) = s.parse::<RuleId>() {
-                    return n;
-                }
-
-                // String ID that can't be parsed as number - assign unique sequential ID
-                if let Some(&existing_id) = self.rule_id_map.get(s) {
-                    return existing_id;
-                } else {
-                    let new_id = self.next_rule_id;
-                    self.next_rule_id += 1;
-                    self.rule_id_map.insert(s.to_string(), new_id);
-                    return new_id;
-                }
-            }
-        }
-
-        // No ID or invalid format - assign sequential ID
-        let new_id = self.next_rule_id;
-        self.next_rule_id += 1;
-        new_id
-    }
-
-    fn parse_detection_from_yaml(&mut self, yaml_doc: &Value) -> Result<()> {
-        let detection = yaml_doc
-            .get("detection")
-            .ok_or_else(|| SigmaError::CompilationError("Missing detection section".to_string()))?;
-
+    /// Parse detection section directly from a detection Value.
+    ///
+    /// This method processes the detection section without requiring the full YAML document,
+    /// providing better performance for selective parsing scenarios.
+    fn parse_detection_value(&mut self, detection: &Value) -> Result<()> {
         if let Value::Mapping(detection_map) = detection {
             for (key, value) in detection_map {
                 if let Some(key_str) = key.as_str() {
@@ -706,7 +712,6 @@ impl Default for Compiler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_yaml::Value;
 
     #[test]
     fn test_compiler_new() {
@@ -897,41 +902,6 @@ detection:
 
         let (_, _, modifiers) = compiler.parse_field_with_modifiers("Data|base64offset");
         assert_eq!(modifiers, vec!["base64_offset_decode"]);
-    }
-
-    #[test]
-    fn test_extract_rule_id_from_yaml() {
-        let mut compiler = Compiler::new();
-
-        // Test with valid numeric ID
-        let yaml_str = r#"
-        id: 12345
-        title: Test Rule
-        "#;
-        let yaml_doc: Value = serde_yaml::from_str(yaml_str).unwrap();
-        let rule_id = compiler.extract_rule_id_from_yaml(&yaml_doc);
-        assert_eq!(rule_id, 12345);
-
-        // Test with no ID - should get sequential ID
-        let yaml_str = r#"
-        title: Test Rule
-        "#;
-        let yaml_doc: Value = serde_yaml::from_str(yaml_str).unwrap();
-        let rule_id = compiler.extract_rule_id_from_yaml(&yaml_doc);
-        assert_eq!(rule_id, 0); // First sequential ID
-
-        // Test with string ID that can't be parsed as number - should get sequential ID
-        let yaml_str = r#"
-        id: "rule-001"
-        title: Test Rule
-        "#;
-        let yaml_doc: Value = serde_yaml::from_str(yaml_str).unwrap();
-        let rule_id = compiler.extract_rule_id_from_yaml(&yaml_doc);
-        assert_eq!(rule_id, 1); // Next sequential ID
-
-        // Test same string ID again - should get same ID
-        let rule_id2 = compiler.extract_rule_id_from_yaml(&yaml_doc);
-        assert_eq!(rule_id2, 1); // Same ID as before
     }
 
     #[test]

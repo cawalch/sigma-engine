@@ -142,7 +142,8 @@ use std::collections::HashMap;
 pub struct EventContext<'a> {
     /// Reference to the original event
     pub event: &'a Value,
-    /// Cache for extracted field values
+    /// Cache for extracted field values with optimized string handling
+    /// Uses String keys and values but with optimized allocation patterns
     field_cache: RefCell<HashMap<String, Option<String>>>,
 }
 
@@ -167,7 +168,7 @@ impl<'a> EventContext<'a> {
     /// Get cached field value or extract and cache it.
     ///
     /// Supports both simple field names and nested field paths using dot notation.
-    /// Returns an owned string to avoid lifetime issues.
+    /// Optimized to minimize allocations during field extraction and caching.
     ///
     /// # Arguments
     /// * `field` - Field name or dot-separated path (e.g., "EventID" or "nested.field")
@@ -188,43 +189,31 @@ impl<'a> EventContext<'a> {
     /// let nested_value = context.get_field("nested.field")?;
     /// ```
     pub fn get_field(&self, field: &str) -> Result<Option<String>, SigmaError> {
-        // Check cache first
-        {
-            let cache = self.field_cache.borrow();
-            if let Some(cached_value) = cache.get(field) {
-                return Ok(cached_value.clone());
-            }
+        // Fast path: check cache first without any allocations
+        if let Some(cached_value) = self.field_cache.borrow().get(field) {
+            return Ok(cached_value.clone());
         }
 
-        // Extract field value
-        let field_value = self.extract_field_value(field)?;
+        // Optimized path: handle simple fields without dot notation more efficiently
+        let field_value = if field.contains('.') {
+            self.extract_nested_field(field)?
+        } else {
+            self.extract_simple_field_optimized(field)?
+        };
 
-        // Cache the result
-        {
-            let mut cache = self.field_cache.borrow_mut();
-            cache.insert(field.to_string(), field_value.clone());
-        }
-
+        self.field_cache
+            .borrow_mut()
+            .insert(field.to_string(), field_value.clone());
         Ok(field_value)
     }
 
-    /// Extract field value from the event without caching.
-    ///
-    /// Supports dot notation for nested field access.
-    fn extract_field_value(&self, field: &str) -> Result<Option<String>, SigmaError> {
-        if field.contains('.') {
-            self.extract_nested_field(field)
-        } else {
-            self.extract_simple_field(field)
-        }
-    }
-
-    /// Extract a simple (non-nested) field value.
-    fn extract_simple_field(&self, field: &str) -> Result<Option<String>, SigmaError> {
+    /// Optimized simple field extraction that avoids unnecessary allocations.
+    fn extract_simple_field_optimized(&self, field: &str) -> Result<Option<String>, SigmaError> {
         match self.event.get(field) {
             Some(Value::String(s)) => Ok(Some(s.clone())),
             Some(Value::Number(n)) => Ok(Some(n.to_string())),
-            Some(Value::Bool(b)) => Ok(Some(b.to_string())),
+            Some(Value::Bool(true)) => Ok(Some("true".to_string())),
+            Some(Value::Bool(false)) => Ok(Some("false".to_string())),
             Some(Value::Null) => Ok(None),
             Some(_) => Err(SigmaError::FieldExtractionError(format!(
                 "Field '{field}' has unsupported type"
@@ -233,12 +222,12 @@ impl<'a> EventContext<'a> {
         }
     }
 
-    /// Extract a nested field value using dot notation.
+    /// Extract a nested field value using dot notation with optimized traversal.
     fn extract_nested_field(&self, field_path: &str) -> Result<Option<String>, SigmaError> {
-        let parts: Vec<&str> = field_path.split('.').collect();
         let mut current = self.event;
 
-        for part in parts {
+        // Avoid collecting into Vec - iterate directly over split
+        for part in field_path.split('.') {
             match current.get(part) {
                 Some(value) => current = value,
                 None => return Ok(None),
@@ -248,7 +237,11 @@ impl<'a> EventContext<'a> {
         match current {
             Value::String(s) => Ok(Some(s.clone())),
             Value::Number(n) => Ok(Some(n.to_string())),
-            Value::Bool(b) => Ok(Some(b.to_string())),
+            Value::Bool(b) => Ok(Some(if *b {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            })),
             Value::Null => Ok(None),
             _ => Err(SigmaError::FieldExtractionError(format!(
                 "Nested field '{field_path}' has unsupported type"

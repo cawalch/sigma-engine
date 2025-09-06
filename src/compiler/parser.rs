@@ -23,6 +23,26 @@ pub(crate) enum Token {
     Wildcard(String),
 }
 
+/// Zero-allocation tokens using string slices.
+///
+/// This enum provides the same functionality as Token but uses string slices
+/// to avoid allocations during tokenization, providing significant performance
+/// improvements for compilation.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum TokenSlice<'a> {
+    Identifier(&'a str),
+    And,
+    Or,
+    Not,
+    LeftParen,
+    RightParen,
+    Of,
+    Them,
+    All,
+    Number(u32),
+    Wildcard(&'a str),
+}
+
 /// AST for SIGMA condition expressions.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -197,61 +217,73 @@ impl<'a> ConditionParser<'a> {
     }
 }
 
-/// Tokenize a SIGMA condition string.
-pub(crate) fn tokenize_condition(condition: &str) -> Result<Vec<Token>> {
+/// Zero-allocation tokenization using string slices.
+///
+/// This function provides significant performance improvements by avoiding
+/// string allocations during tokenization, using string slices instead.
+/// Uses proper UTF-8 handling to avoid issues with non-ASCII characters.
+pub(crate) fn tokenize_condition_zero_alloc(condition: &str) -> Result<Vec<TokenSlice<'_>>> {
     let mut tokens = Vec::new();
-    let mut chars = condition.chars().peekable();
+    let mut char_indices = condition.char_indices().peekable();
 
-    while let Some(&ch) = chars.peek() {
+    while let Some((byte_pos, ch)) = char_indices.next() {
         match ch {
             ' ' | '\t' | '\n' => {
-                chars.next();
+                // Skip whitespace
             }
             '(' => {
-                tokens.push(Token::LeftParen);
-                chars.next();
+                tokens.push(TokenSlice::LeftParen);
             }
             ')' => {
-                tokens.push(Token::RightParen);
-                chars.next();
+                tokens.push(TokenSlice::RightParen);
             }
             '0'..='9' => {
-                let mut number_str = String::new();
-                while let Some(&ch) = chars.peek() {
-                    if ch.is_ascii_digit() {
-                        number_str.push(ch);
-                        chars.next();
+                let start_pos = byte_pos;
+                let mut end_pos = byte_pos + ch.len_utf8();
+
+                // Consume all consecutive digits
+                while let Some(&(next_byte_pos, next_ch)) = char_indices.peek() {
+                    if next_ch.is_ascii_digit() {
+                        end_pos = next_byte_pos + next_ch.len_utf8();
+                        char_indices.next(); // consume the digit
                     } else {
                         break;
                     }
                 }
+
+                let number_str = &condition[start_pos..end_pos];
                 if let Ok(num) = number_str.parse::<u32>() {
-                    tokens.push(Token::Number(num));
+                    tokens.push(TokenSlice::Number(num));
                 }
             }
             'a'..='z' | 'A'..='Z' | '_' => {
-                let mut identifier = String::new();
-                while let Some(&ch) = chars.peek() {
-                    if ch.is_alphanumeric() || ch == '_' || ch == '*' {
-                        identifier.push(ch);
-                        chars.next();
+                let start_pos = byte_pos;
+                let mut end_pos = byte_pos + ch.len_utf8();
+
+                // Consume all alphanumeric characters, underscores, and wildcards
+                while let Some(&(next_byte_pos, next_ch)) = char_indices.peek() {
+                    if next_ch.is_alphanumeric() || next_ch == '_' || next_ch == '*' {
+                        end_pos = next_byte_pos + next_ch.len_utf8();
+                        char_indices.next(); // consume the character
                     } else {
                         break;
                     }
                 }
 
-                match identifier.as_str() {
-                    "and" => tokens.push(Token::And),
-                    "or" => tokens.push(Token::Or),
-                    "not" => tokens.push(Token::Not),
-                    "of" => tokens.push(Token::Of),
-                    "them" => tokens.push(Token::Them),
-                    "all" => tokens.push(Token::All),
+                let identifier = &condition[start_pos..end_pos];
+
+                match identifier {
+                    "and" => tokens.push(TokenSlice::And),
+                    "or" => tokens.push(TokenSlice::Or),
+                    "not" => tokens.push(TokenSlice::Not),
+                    "of" => tokens.push(TokenSlice::Of),
+                    "them" => tokens.push(TokenSlice::Them),
+                    "all" => tokens.push(TokenSlice::All),
                     _ => {
                         if identifier.contains('*') {
-                            tokens.push(Token::Wildcard(identifier));
+                            tokens.push(TokenSlice::Wildcard(identifier));
                         } else {
-                            tokens.push(Token::Identifier(identifier));
+                            tokens.push(TokenSlice::Identifier(identifier));
                         }
                     }
                 }
@@ -262,6 +294,32 @@ pub(crate) fn tokenize_condition(condition: &str) -> Result<Vec<Token>> {
                 )));
             }
         }
+    }
+
+    Ok(tokens)
+}
+
+/// Tokenize a SIGMA condition string.
+pub(crate) fn tokenize_condition(condition: &str) -> Result<Vec<Token>> {
+    // Use zero-allocation tokenization and convert to owned tokens
+    let slice_tokens = tokenize_condition_zero_alloc(condition)?;
+    let mut tokens = Vec::with_capacity(slice_tokens.len());
+
+    for token in slice_tokens {
+        let owned_token = match token {
+            TokenSlice::Identifier(s) => Token::Identifier(s.to_string()),
+            TokenSlice::And => Token::And,
+            TokenSlice::Or => Token::Or,
+            TokenSlice::Not => Token::Not,
+            TokenSlice::LeftParen => Token::LeftParen,
+            TokenSlice::RightParen => Token::RightParen,
+            TokenSlice::Of => Token::Of,
+            TokenSlice::Them => Token::Them,
+            TokenSlice::All => Token::All,
+            TokenSlice::Number(n) => Token::Number(n),
+            TokenSlice::Wildcard(s) => Token::Wildcard(s.to_string()),
+        };
+        tokens.push(owned_token);
     }
 
     Ok(tokens)

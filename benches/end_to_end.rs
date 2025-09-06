@@ -5,6 +5,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use serde_json::json;
+use sigma_engine::matcher::EventContext;
 use sigma_engine::{Compiler, DagEngineConfig, SigmaEngine};
 
 /// Benchmark single event evaluation through the complete pipeline
@@ -257,12 +258,108 @@ detection:
     });
 }
 
+/// Benchmark JSON processing pipeline components
+fn bench_json_processing_pipeline(c: &mut Criterion) {
+    let mut group = c.benchmark_group("json_processing");
+
+    // Test JSON strings of varying complexity
+    let simple_json = r#"{"EventID": "4624", "LogonType": 2}"#;
+    let complex_json = r#"{
+        "EventID": "4104",
+        "ScriptBlockText": "powershell.exe -EncodedCommand SQBuAHYAbwBrAGUALQBXAGUAYgBSAGUAcQB1AGUAcwB0AA==",
+        "ProcessName": "powershell.exe",
+        "User": "DOMAIN\\user",
+        "Computer": "WORKSTATION01",
+        "Nested": {
+            "Field1": "value1",
+            "Field2": 42,
+            "Deep": {
+                "Field3": "deep_value",
+                "Array": [1, 2, 3, 4, 5]
+            }
+        }
+    }"#;
+
+    // Benchmark raw JSON parsing
+    group.bench_function("serde_json_parse_simple", |b| {
+        b.iter(|| {
+            let _: serde_json::Value = serde_json::from_str(black_box(simple_json)).unwrap();
+        })
+    });
+
+    group.bench_function("serde_json_parse_complex", |b| {
+        b.iter(|| {
+            let _: serde_json::Value = serde_json::from_str(black_box(complex_json)).unwrap();
+        })
+    });
+
+    // Benchmark field extraction patterns
+    let simple_event: serde_json::Value = serde_json::from_str(simple_json).unwrap();
+    let complex_event: serde_json::Value = serde_json::from_str(complex_json).unwrap();
+
+    group.bench_function("field_extraction_simple", |b| {
+        b.iter(|| {
+            let context = EventContext::new(black_box(&simple_event));
+            let _ = context.get_field("EventID");
+            let _ = context.get_field("LogonType");
+        })
+    });
+
+    group.bench_function("field_extraction_complex", |b| {
+        b.iter(|| {
+            let context = EventContext::new(black_box(&complex_event));
+            let _ = context.get_field("EventID");
+            let _ = context.get_field("ProcessName");
+            let _ = context.get_field("Nested.Field1");
+            let _ = context.get_field("Nested.Deep.Field3");
+        })
+    });
+
+    // Benchmark field caching effectiveness
+    group.bench_function("field_caching_repeated_access", |b| {
+        b.iter(|| {
+            let context = EventContext::new(black_box(&complex_event));
+            // First access - should cache
+            let _ = context.get_field("EventID");
+            let _ = context.get_field("ProcessName");
+            // Repeated access - should use cache
+            for _ in 0..10 {
+                let _ = context.get_field("EventID");
+                let _ = context.get_field("ProcessName");
+            }
+        })
+    });
+
+    // Benchmark simd-json if available
+    #[cfg(feature = "profiling")]
+    {
+        group.bench_function("simd_json_parse_simple", |b| {
+            b.iter(|| {
+                let mut bytes = simple_json.as_bytes().to_vec();
+                let _: simd_json::owned::Value =
+                    simd_json::from_slice(black_box(&mut bytes)).unwrap();
+            })
+        });
+
+        group.bench_function("simd_json_parse_complex", |b| {
+            b.iter(|| {
+                let mut bytes = complex_json.as_bytes().to_vec();
+                let _: simd_json::owned::Value =
+                    simd_json::from_slice(black_box(&mut bytes)).unwrap();
+            })
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_end_to_end_single_event,
     bench_end_to_end_batch_events,
     bench_compilation_performance,
     bench_multiple_rules_compilation,
-    bench_engine_creation
+    bench_engine_creation,
+    bench_json_processing_pipeline
 );
 criterion_main!(benches);

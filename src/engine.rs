@@ -544,8 +544,8 @@ detection:
             SigmaEngine::from_ruleset_with_config(ruleset.clone(), config_high_perf);
         assert!(engine_high_perf.is_ok());
 
-        // Test with streaming optimized config
-        let config_streaming = DagEngineConfig::streaming_optimized();
+        // Test with streaming config
+        let config_streaming = DagEngineConfig::streaming();
         let engine_streaming = SigmaEngine::from_ruleset_with_config(ruleset, config_streaming);
         assert!(engine_streaming.is_ok());
     }

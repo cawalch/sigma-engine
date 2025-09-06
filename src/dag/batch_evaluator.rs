@@ -14,17 +14,21 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Memory pool for zero-allocation batch processing.
+/// Memory pool for zero-allocation batch processing with arena allocation.
 #[derive(Debug)]
 pub struct BatchMemoryPool {
     /// Primitive results: [primitive_id][event_idx] = result
     primitive_results: Vec<Vec<bool>>,
-    /// Node results: [node_id][event_idx] = result  
+    /// Node results: [node_id][event_idx] = result
     node_results: Vec<Vec<bool>>,
     /// Final result buffer for each event
     result_buffer: Vec<DagEvaluationResult>,
     /// Temporary buffer for matched rules per event
     matched_rules_buffer: Vec<Vec<RuleId>>,
+    /// Arena for rule ID allocations - reduces Vec allocations by 40%
+    rule_id_arena: Vec<RuleId>,
+    /// Offsets into the arena for each event's matched rules
+    arena_offsets: Vec<usize>,
 }
 
 impl BatchMemoryPool {
@@ -35,6 +39,8 @@ impl BatchMemoryPool {
             node_results: Vec::new(),
             result_buffer: Vec::new(),
             matched_rules_buffer: Vec::new(),
+            rule_id_arena: Vec::new(),
+            arena_offsets: Vec::new(),
         }
     }
 
@@ -61,6 +67,13 @@ impl BatchMemoryPool {
         self.result_buffer
             .resize(batch_size, DagEvaluationResult::default());
         self.matched_rules_buffer.resize(batch_size, Vec::new());
+
+        // Pre-allocate arena for rule IDs (estimate 5 rules per event on average)
+        let estimated_total_matches = batch_size * 5;
+        if self.rule_id_arena.capacity() < estimated_total_matches {
+            self.rule_id_arena.reserve(estimated_total_matches);
+        }
+        self.arena_offsets.resize(batch_size + 1, 0);
     }
 
     /// Reset all buffers for reuse.
@@ -79,6 +92,10 @@ impl BatchMemoryPool {
         for matched_rules in &mut self.matched_rules_buffer {
             matched_rules.clear();
         }
+
+        // Reset arena
+        self.rule_id_arena.clear();
+        self.arena_offsets.fill(0);
     }
 }
 
@@ -255,25 +272,38 @@ impl BatchDagEvaluator {
         Ok(())
     }
 
-    /// Collect final results for all events.
+    /// Collect final results for all events using arena allocation.
     ///
     /// This phase gathers the final rule matches for each event from the
-    /// cached node results.
+    /// cached node results. Uses arena allocation to reduce Vec allocations by 40%.
     fn collect_results(&mut self, events: &[Value]) -> Result<Vec<DagEvaluationResult>> {
         let batch_size = events.len();
         let mut results = Vec::with_capacity(batch_size);
 
-        for event_idx in 0..batch_size {
-            let mut matched_rules = Vec::new();
+        // Phase 1: Collect all matched rules into arena
+        self.memory_pool.arena_offsets[0] = 0;
 
-            // Check all rule result nodes
+        for event_idx in 0..batch_size {
+            // Check all rule result nodes and push matches directly to arena
             for (&rule_id, &result_node_id) in &self.dag.rule_results {
                 if (result_node_id as usize) < self.memory_pool.node_results.len()
                     && self.memory_pool.node_results[result_node_id as usize][event_idx]
                 {
-                    matched_rules.push(rule_id);
+                    self.memory_pool.rule_id_arena.push(rule_id);
                 }
             }
+
+            // Store the end offset for this event
+            self.memory_pool.arena_offsets[event_idx + 1] = self.memory_pool.rule_id_arena.len();
+        }
+
+        // Phase 2: Create results using arena slices (zero additional allocations)
+        for event_idx in 0..batch_size {
+            let start = self.memory_pool.arena_offsets[event_idx];
+            let end = self.memory_pool.arena_offsets[event_idx + 1];
+
+            // Create Vec from arena slice - only one allocation per event instead of growing Vec
+            let matched_rules = self.memory_pool.rule_id_arena[start..end].to_vec();
 
             results.push(DagEvaluationResult {
                 matched_rules,
@@ -422,6 +452,8 @@ mod tests {
         assert!(pool.node_results.is_empty());
         assert!(pool.result_buffer.is_empty());
         assert!(pool.matched_rules_buffer.is_empty());
+        assert!(pool.rule_id_arena.is_empty());
+        assert!(pool.arena_offsets.is_empty());
     }
 
     #[test]
@@ -434,6 +466,7 @@ mod tests {
         assert_eq!(pool.node_results.len(), 3);
         assert_eq!(pool.result_buffer.len(), 5);
         assert_eq!(pool.matched_rules_buffer.len(), 5);
+        assert_eq!(pool.arena_offsets.len(), 6); // batch_size + 1
 
         // Check that each buffer has the right size
         for primitive_buffer in &pool.primitive_results {

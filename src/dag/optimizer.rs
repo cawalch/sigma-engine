@@ -295,17 +295,20 @@ impl DagOptimizer {
     }
 
     /// Optimize execution order to prioritize high-selectivity primitives first.
-    /// This is a battle-tested fail-fast optimization.
+    /// This implements advanced fail-fast optimization by understanding logical dependencies.
     fn optimize_execution_order(
         &self,
         dag: &CompiledDag,
         basic_order: Vec<u32>,
     ) -> Result<Vec<u32>> {
+        // First, identify critical paths for fail-fast optimization
+        let critical_paths = self.identify_critical_paths(dag);
+
         let mut optimized_order = Vec::new();
         let mut remaining_nodes: HashSet<u32> = basic_order.into_iter().collect();
         let mut processed_nodes = HashSet::new();
 
-        // Process nodes in waves, respecting dependencies
+        // Process nodes in waves, respecting dependencies and critical paths
         while !remaining_nodes.is_empty() {
             // Find nodes that can be executed (all dependencies satisfied)
             let mut ready_nodes: Vec<u32> = remaining_nodes
@@ -327,14 +330,14 @@ impl DagOptimizer {
                 break;
             }
 
-            // Sort ready nodes by estimated selectivity (most selective first)
+            // Sort ready nodes by fail-fast priority
             ready_nodes.sort_by(|&a, &b| {
-                let selectivity_a = self.estimate_node_selectivity(dag, a);
-                let selectivity_b = self.estimate_node_selectivity(dag, b);
+                let priority_a = self.calculate_fail_fast_priority(dag, a, &critical_paths);
+                let priority_b = self.calculate_fail_fast_priority(dag, b, &critical_paths);
 
-                // Lower selectivity = more selective = higher priority
-                selectivity_a
-                    .partial_cmp(&selectivity_b)
+                // Higher priority = execute first
+                priority_b
+                    .partial_cmp(&priority_a)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
 
@@ -347,6 +350,91 @@ impl DagOptimizer {
         }
 
         Ok(optimized_order)
+    }
+
+    /// Identify critical paths in the DAG for fail-fast optimization.
+    /// Critical paths are sequences of AND operations where early failure can skip large subtrees.
+    fn identify_critical_paths(&self, dag: &CompiledDag) -> Vec<Vec<u32>> {
+        let mut critical_paths = Vec::new();
+
+        // Find all AND nodes that are part of critical paths
+        for node in &dag.nodes {
+            if let NodeType::Logical {
+                operation: LogicalOp::And,
+            } = &node.node_type
+            {
+                // This is an AND node - check if it's part of a critical path
+                if self.is_critical_and_node(dag, node.id) {
+                    let path = self.build_critical_path(dag, node.id);
+                    if !path.is_empty() {
+                        critical_paths.push(path);
+                    }
+                }
+            }
+        }
+
+        critical_paths
+    }
+
+    /// Check if an AND node is critical for fail-fast optimization.
+    fn is_critical_and_node(&self, dag: &CompiledDag, node_id: u32) -> bool {
+        if let Some(node) = dag.get_node(node_id) {
+            if let NodeType::Logical {
+                operation: LogicalOp::And,
+            } = &node.node_type
+            {
+                // An AND node is critical if it has multiple dependencies that could be expensive
+                return node.dependencies.len() >= 2;
+            }
+        }
+        false
+    }
+
+    /// Build a critical path starting from an AND node.
+    fn build_critical_path(&self, dag: &CompiledDag, and_node_id: u32) -> Vec<u32> {
+        let mut path = Vec::new();
+
+        if let Some(and_node) = dag.get_node(and_node_id) {
+            // Add the AND node itself
+            path.push(and_node_id);
+
+            // Add all its dependencies (these should be evaluated in order of selectivity)
+            for &dep_id in &and_node.dependencies {
+                path.push(dep_id);
+            }
+        }
+
+        path
+    }
+
+    /// Calculate fail-fast priority for a node based on critical paths.
+    /// Higher priority means the node should be executed earlier.
+    fn calculate_fail_fast_priority(
+        &self,
+        dag: &CompiledDag,
+        node_id: u32,
+        critical_paths: &[Vec<u32>],
+    ) -> f64 {
+        let base_selectivity = self.estimate_node_selectivity(dag, node_id);
+
+        // Check if this node is part of any critical path
+        let mut critical_path_bonus = 0.0;
+        for path in critical_paths {
+            if let Some(position) = path.iter().position(|&id| id == node_id) {
+                // Nodes earlier in critical paths get higher priority
+                // First dependency of AND gets highest bonus
+                if position == 1 {
+                    critical_path_bonus += 1000.0; // Very high priority for first AND dependency
+                } else if position > 1 {
+                    critical_path_bonus += 100.0 / position as f64; // Decreasing priority for later dependencies
+                }
+            }
+        }
+
+        // Convert selectivity to priority (lower selectivity = higher priority)
+        let selectivity_priority = 1.0 / (base_selectivity + 0.01);
+
+        selectivity_priority + critical_path_bonus
     }
 
     /// Estimate the selectivity of a node for execution order optimization.
