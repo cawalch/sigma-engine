@@ -1,7 +1,8 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::{json, Value};
 use sigma_engine::dag::engine::{DagEngine, DagEngineConfig};
 use sigma_engine::ir::{CompiledRuleset, Primitive};
+use std::hint::black_box;
 use std::time::Duration;
 
 /// Real-world SIGMA rule patterns based on the SigmaHQ repository

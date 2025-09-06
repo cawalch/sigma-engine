@@ -3,9 +3,10 @@
 //! These benchmarks specifically test the DAG-based execution engine
 //! performance characteristics and optimization effectiveness.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::json;
 use sigma_engine::{Compiler, DagEngineConfig, SigmaEngine};
+use std::hint::black_box;
 
 /// Benchmark DAG engine execution through SigmaEngine
 fn bench_dag_execution(c: &mut Criterion) {
@@ -233,8 +234,8 @@ fn bench_storage_strategy_threshold(c: &mut Criterion) {
         // Create a simple rule that will generate a DAG with approximately the target size
         let rule_yaml = format!(
             r#"
-title: Storage Strategy Test Rule Size {}
-id: {}
+title: Storage Strategy Test Rule Size {size}
+id: {size}
 logsource:
     product: test
 detection:
@@ -246,8 +247,7 @@ detection:
         CommandLine|contains: test
     condition: sel1 and sel2 and sel3
 level: medium
-"#,
-            size, size
+"#
         );
 
         let mut compiler = Compiler::new();
