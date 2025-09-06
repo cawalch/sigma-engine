@@ -3,9 +3,10 @@
 //! These benchmarks test how the engine performs as the number of rules increases,
 //! validating linear O(1) scaling characteristics.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::json;
 use sigma_engine::{Compiler, DagEngineConfig, SigmaEngine};
+use std::hint::black_box;
 
 /// Generate realistic SIGMA rules for scaling benchmarks
 fn generate_test_rules(count: usize) -> Vec<String> {

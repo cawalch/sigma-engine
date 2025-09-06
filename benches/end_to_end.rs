@@ -3,10 +3,11 @@
 //! These benchmarks test the complete pipeline from YAML rule compilation
 //! to event evaluation, measuring real-world performance scenarios.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use serde_json::json;
 use sigma_engine::matcher::EventContext;
 use sigma_engine::{Compiler, DagEngineConfig, SigmaEngine};
+use std::hint::black_box;
 
 /// Benchmark single event evaluation through the complete pipeline
 fn bench_end_to_end_single_event(c: &mut Criterion) {
