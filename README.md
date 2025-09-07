@@ -194,50 +194,6 @@ detection:
 }
 ```
 
-### Streaming Processing
-
-For high-throughput event streaming scenarios (Kafka, message queues):
-
-```rust
-use sigma_engine::streaming::{StreamingEngine, StreamingConfig, StreamingEvent};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let rule_yaml = r#"
-title: Suspicious Login
-detection:
-    selection:
-        EventID: 4625
-        LogonType: 3
-    condition: selection
-"#;
-
-    // Create engine optimized for streaming workloads
-    let mut compiler = sigma_engine::Compiler::new();
-    let ruleset = compiler.compile_ruleset(&[rule_yaml])?;
-    let config = StreamingConfig::kafka_optimized(); // or low_latency(), high_throughput()
-    let mut engine = StreamingEngine::new(ruleset, config)?;
-
-    engine.start();
-
-    // Process streaming events with adaptive batching
-    let events = vec![
-        StreamingEvent::new(serde_json::json!({"EventID": "4625", "LogonType": 3})),
-        StreamingEvent::new(serde_json::json!({"EventID": "4624", "LogonType": 2})),
-    ];
-
-    let results = engine.process_events(events)?;
-    println!("Processed {} events with {} total matches",
-             results.len(),
-             results.iter().map(|r| r.match_count()).sum::<usize>());
-
-    // Get performance statistics
-    let stats = engine.get_performance_stats();
-    println!("Throughput: {:.0} events/sec", stats.events_per_second);
-
-    Ok(())
-}
-```
-
 ## Features
 
 - **High Performance**: DAG-based execution with shared computation optimization
