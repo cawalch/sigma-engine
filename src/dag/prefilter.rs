@@ -1,14 +1,14 @@
 //! High-performance literal prefilter for DAG optimization.
 //!
-//! This module implements an intelligent prefilter that uses AhoCorasick for large pattern sets
-//! and simple matching for small sets, with zero-allocation JSON traversal.
+//! This module implements a prefilter using AhoCorasick automaton for fast multi-pattern
+//! matching with zero-allocation JSON traversal.
 //!
 //! # Performance Characteristics
 //!
 //! - **Event Elimination**: 70-90% for non-matching events
-//! - **Memory Overhead**: Minimal (patterns + automaton for large sets)
+//! - **Memory Overhead**: Minimal (patterns + automaton)
 //! - **Latency**: Sub-microsecond for most events
-//! - **Scaling**: O(1) with AhoCorasick for large pattern sets, O(n) for small sets
+//! - **Scaling**: O(1) with AhoCorasick automaton
 //!
 //! # Usage
 //!
@@ -37,39 +37,19 @@ use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use serde_json::Value;
 use std::collections::HashMap;
 
-// Threshold for switching between simple matching and AhoCorasick
-const AHOCORASICK_THRESHOLD: usize = 20;
-
-/// High-performance literal pattern prefilter with intelligent strategy selection.
+/// High-performance literal pattern prefilter using AhoCorasick automaton.
 ///
-/// Uses simple pattern matching for small sets and AhoCorasick for large sets,
-/// both with zero-allocation JSON traversal (no serialization).
+/// Uses AhoCorasick for fast multi-pattern matching with zero-allocation JSON traversal.
 #[derive(Debug, Clone)]
 pub struct LiteralPrefilter {
-    /// The prefilter implementation strategy
-    strategy: PrefilterStrategy,
+    /// AhoCorasick automaton for pattern matching
+    automaton: Option<AhoCorasick>,
+    /// All patterns in the automaton
+    patterns: Vec<String>,
+    /// Mapping from pattern index to primitive IDs
+    pattern_to_primitives: HashMap<usize, Vec<u32>>,
     /// Statistics for optimization analysis and monitoring
     stats: PrefilterStats,
-}
-
-/// Internal prefilter implementation strategies
-#[derive(Debug, Clone)]
-enum PrefilterStrategy {
-    /// Simple pattern matching for small pattern sets (< 20 patterns)
-    Simple {
-        exact_patterns: Vec<String>,
-        contains_patterns: Vec<String>,
-        pattern_to_primitives: HashMap<usize, Vec<u32>>,
-        case_insensitive: bool,
-    },
-    /// AhoCorasick automaton for large pattern sets (>= 20 patterns)
-    /// Uses zero-allocation JSON traversal - no string serialization
-    /// Case insensitivity is handled internally by the automaton
-    AhoCorasick {
-        automaton: AhoCorasick,
-        patterns: Vec<String>,
-        pattern_to_primitives: HashMap<usize, Vec<u32>>,
-    },
 }
 
 /// Statistics about prefilter performance and effectiveness.
@@ -93,17 +73,15 @@ impl PrefilterStats {
     /// Returns true if the prefilter is likely to provide significant performance benefits.
     pub fn is_effective(&self) -> bool {
         // Prefilter is effective when:
-        // 1. We have enough patterns to justify the overhead (at least 10)
+        // 1. We have enough patterns to justify the overhead (at least 5)
         // 2. The patterns are selective enough (< 70% estimated selectivity)
-        // 3. We're searching multiple fields (better coverage)
-        self.pattern_count >= 10 && self.estimated_selectivity < 0.7 && self.field_count >= 2
+        self.pattern_count >= 5 && self.estimated_selectivity < 0.7
     }
 
     /// Returns true if prefiltering should be enabled for this pattern set
     pub fn should_enable_prefilter(&self) -> bool {
-        // Enable prefilter when we have a reasonable number of patterns
-        // and they're likely to be selective
-        self.pattern_count >= 5 && self.estimated_selectivity < 0.8
+        // Enable prefilter when we have patterns and they're likely to be selective
+        self.pattern_count >= 1 && self.estimated_selectivity < 0.8
     }
 
     /// Returns a human-readable description of the prefilter's expected performance impact.
@@ -128,26 +106,10 @@ impl PrefilterStats {
         }
     }
 
-    /// Returns the strategy being used (AhoCorasick vs Simple)
+    /// Returns the strategy being used (always AhoCorasick)
     pub fn strategy_name(&self) -> String {
-        const THRESHOLD: usize = 20; // Same as AHOCORASICK_THRESHOLD
-        if self.pattern_count >= THRESHOLD {
-            format!("AhoCorasick ({} patterns)", self.pattern_count)
-        } else {
-            format!("Simple ({} patterns)", self.pattern_count)
-        }
+        format!("AhoCorasick ({} patterns)", self.pattern_count)
     }
-}
-
-/// Strategy for extracting literal patterns from SIGMA conditions
-#[derive(Debug, Clone, PartialEq)]
-pub enum ExtractionStrategy {
-    /// Extract exact string literals only (most conservative)
-    ExactOnly,
-    /// Extract substrings from contains/startswith/endswith patterns
-    Substrings,
-    /// Extract all possible literal components (most aggressive)
-    Comprehensive,
 }
 
 /// Configuration for prefilter construction and behavior.
@@ -157,18 +119,8 @@ pub struct PrefilterConfig {
     pub case_insensitive: bool,
     /// Minimum pattern length to include (filters out very short patterns)
     pub min_pattern_length: usize,
-    /// Maximum pattern length to include (filters out very long patterns)
-    pub max_pattern_length: Option<usize>,
     /// Maximum number of patterns to include (prevents memory explosion)
     pub max_patterns: Option<usize>,
-    /// Strategy for extracting patterns from different condition types
-    pub extraction_strategy: ExtractionStrategy,
-    /// Whether to extract patterns from conditions with modifiers
-    pub include_modified_conditions: bool,
-    /// Whether to extract patterns from numeric/range conditions
-    pub include_numeric_patterns: bool,
-    /// Minimum selectivity threshold (0.0-1.0) - patterns below this are excluded
-    pub min_selectivity_threshold: f64,
     /// Whether to enable the prefilter (master switch)
     pub enabled: bool,
 }
@@ -177,63 +129,20 @@ impl Default for PrefilterConfig {
     fn default() -> Self {
         Self {
             case_insensitive: false,
-            min_pattern_length: 2, // Allow shorter patterns for SIGMA rules (EventIDs, etc.)
-            max_pattern_length: Some(100), // Prevent very long patterns that aren't selective
-            max_patterns: Some(1_000), // More conservative limit
-            extraction_strategy: ExtractionStrategy::Substrings,
-            include_modified_conditions: false, // Skip conditions with modifiers by default
-            include_numeric_patterns: true,     // Include numeric patterns (EventIDs, etc.)
-            min_selectivity_threshold: 0.01, // Only include patterns that appear in <1% of events
+            min_pattern_length: 1, // Include all patterns including EventIDs
+            max_patterns: Some(1_000), // Reasonable limit
             enabled: true,
         }
     }
 }
 
 impl PrefilterConfig {
-    /// Create a configuration optimized for high-performance scenarios
-    /// Focuses on highly selective patterns only
-    pub fn high_performance() -> Self {
-        Self {
-            case_insensitive: false,
-            min_pattern_length: 4, // Only longer, more selective patterns
-            max_pattern_length: Some(50),
-            max_patterns: Some(200), // Very small pattern set for maximum cache efficiency
-            extraction_strategy: ExtractionStrategy::ExactOnly,
-            include_modified_conditions: false,
-            include_numeric_patterns: false, // Skip numeric patterns for max selectivity
-            min_selectivity_threshold: 0.001, // Only extremely selective patterns
-            enabled: true,
-        }
-    }
-
-    /// Create a configuration for comprehensive matching (slower but more thorough)
-    /// Includes more patterns for broader coverage
-    pub fn comprehensive() -> Self {
-        Self {
-            case_insensitive: true, // Case insensitive for broader matching
-            min_pattern_length: 1,  // Include very short patterns
-            max_pattern_length: Some(200),
-            max_patterns: Some(5_000),
-            extraction_strategy: ExtractionStrategy::Comprehensive,
-            include_modified_conditions: true, // Include patterns even with modifiers
-            include_numeric_patterns: true,
-            min_selectivity_threshold: 0.05, // More permissive threshold
-            enabled: true,
-        }
-    }
-
     /// Create a configuration for SIGMA security rules
-    /// Balanced approach for security monitoring scenarios
     pub fn sigma() -> Self {
         Self {
-            case_insensitive: false, // SIGMA rules are typically case-sensitive
-            min_pattern_length: 1,   // Include EventIDs like "1", "2", etc.
-            max_pattern_length: Some(100),
+            case_insensitive: false,   // SIGMA rules are typically case-sensitive
+            min_pattern_length: 1,     // Include EventIDs like "1", "2", etc.
             max_patterns: Some(1_500), // Allow many patterns for security coverage
-            extraction_strategy: ExtractionStrategy::Substrings,
-            include_modified_conditions: true, // Include conditions with modifiers for SIGMA rules
-            include_numeric_patterns: true,    // EventIDs are crucial for security
-            min_selectivity_threshold: 0.02,   // Balanced selectivity for security patterns
             enabled: true,
         }
     }
@@ -243,21 +152,6 @@ impl PrefilterConfig {
         Self {
             enabled: false,
             ..Default::default()
-        }
-    }
-
-    /// Create a configuration for testing/debugging with very permissive settings
-    pub fn debug() -> Self {
-        Self {
-            case_insensitive: false,
-            min_pattern_length: 1,
-            max_pattern_length: None,
-            max_patterns: None,
-            extraction_strategy: ExtractionStrategy::Comprehensive,
-            include_modified_conditions: true,
-            include_numeric_patterns: true,
-            min_selectivity_threshold: 0.0, // Include all patterns
-            enabled: true,
         }
     }
 }
@@ -285,55 +179,12 @@ impl PatternBuilder {
     fn add_primitive(&mut self, primitive_id: u32, primitive: &Primitive) {
         self.primitive_count += 1;
 
-        // Skip primitives with modifiers unless explicitly enabled
-        if !self.config.include_modified_conditions && !primitive.modifiers.is_empty() {
-            return;
-        }
-
-        // Extract patterns based on the configured strategy
+        // Extract patterns from literal match types only
         let extracted_patterns = self.extract_patterns_from_primitive(primitive);
 
         for pattern in extracted_patterns {
-            // Safety: never drop literal-ish patterns; guarantees no false negatives for literal matchers
-            let is_literal_ish = matches!(
-                primitive.match_type.as_str(),
-                "equals" | "contains" | "startswith" | "endswith"
-            );
-
-            if is_literal_ish {
-                let final_pattern = if self.config.case_insensitive {
-                    pattern.to_lowercase()
-                } else {
-                    pattern
-                };
-                self.add_pattern_to_collection(primitive_id, &final_pattern, &primitive.match_type);
-                if let Some(max) = self.config.max_patterns {
-                    if self.exact_patterns.len() + self.contains_patterns.len() >= max {
-                        break;
-                    }
-                }
-                continue;
-            }
-
-            // For non-literal matchers, apply filters to avoid performance degradation
-
-            // Apply length filters
+            // Apply length filter
             if pattern.len() < self.config.min_pattern_length {
-                continue;
-            }
-            if let Some(max_len) = self.config.max_pattern_length {
-                if pattern.len() > max_len {
-                    continue;
-                }
-            }
-
-            // Skip very common patterns that won't be selective
-            if self.is_common_pattern(&pattern) {
-                continue;
-            }
-
-            // Apply selectivity threshold (simple heuristic based on pattern characteristics)
-            if !self.meets_selectivity_threshold(&pattern) {
                 continue;
             }
 
@@ -355,71 +206,18 @@ impl PatternBuilder {
         }
     }
 
-    /// Extract literal patterns from a primitive based on the configured strategy
+    /// Extract literal patterns from a primitive (only literal match types)
     fn extract_patterns_from_primitive(&self, primitive: &Primitive) -> Vec<String> {
         let mut patterns = Vec::new();
 
-        for value in &primitive.values {
-            match self.config.extraction_strategy {
-                ExtractionStrategy::ExactOnly => {
-                    // Only extract exact string literals
-                    if matches!(primitive.match_type.as_str(), "equals") {
-                        patterns.push(value.clone());
-                    }
-                }
-                ExtractionStrategy::Substrings => {
-                    // Extract patterns from contains/startswith/endswith
-                    match primitive.match_type.as_str() {
-                        "equals" | "contains" | "startswith" => {
-                            patterns.push(value.clone());
-                        }
-                        "endswith" => {
-                            // For endswith patterns, extract useful substrings
-                            // Remove leading path separators that won't be useful for matching
-                            let cleaned = value.trim_start_matches(['\\', '/']);
-                            if !cleaned.is_empty() {
-                                patterns.push(cleaned.to_string());
-                            }
-                            // Also include the original pattern in case it's needed
-                            patterns.push(value.clone());
-                        }
-                        _ => {} // Skip regex, ranges, etc.
-                    }
-                }
-                ExtractionStrategy::Comprehensive => {
-                    // Try to extract useful patterns from any condition type
-                    patterns
-                        .extend(self.extract_comprehensive_patterns(value, &primitive.match_type));
-                }
+        // Only extract from literal match types
+        if matches!(
+            primitive.match_type.as_str(),
+            "equals" | "contains" | "startswith" | "endswith"
+        ) {
+            for value in &primitive.values {
+                patterns.push(value.clone());
             }
-        }
-
-        patterns
-    }
-
-    /// Extract patterns comprehensively from various condition types
-    fn extract_comprehensive_patterns(&self, value: &str, match_type: &str) -> Vec<String> {
-        let mut patterns = Vec::new();
-
-        match match_type {
-            "equals" | "contains" | "startswith" | "endswith" => {
-                patterns.push(value.to_string());
-            }
-            "regex" => {
-                // Try to extract literal substrings from regex patterns
-                patterns.extend(self.extract_literals_from_regex(value));
-            }
-            "range" => {
-                // Extract numeric patterns if enabled
-                if self.config.include_numeric_patterns {
-                    patterns.extend(self.extract_patterns_from_range(value));
-                }
-            }
-            "cidr" => {
-                // Extract IP components from CIDR ranges
-                patterns.extend(self.extract_patterns_from_cidr(value));
-            }
-            _ => {} // Skip unknown match types
         }
 
         patterns
@@ -441,7 +239,7 @@ impl PatternBuilder {
                         .push(primitive_id);
                 }
             }
-            "contains" | "startswith" | "endswith" | "regex" | "range" | "cidr" => {
+            "contains" | "startswith" | "endswith" => {
                 if !self.contains_patterns.contains(&pattern.to_string()) {
                     let pattern_idx = self.contains_patterns.len();
                     self.contains_patterns.push(pattern.to_string());
@@ -458,159 +256,33 @@ impl PatternBuilder {
         }
     }
 
-    /// Check if a pattern meets the selectivity threshold
-    fn meets_selectivity_threshold(&self, pattern: &str) -> bool {
-        // Simple heuristic: shorter patterns and common words are less selective
-        let estimated_frequency = match pattern.len() {
-            1 => 0.1,        // Single characters appear frequently
-            2 => 0.05,       // Two characters are moderately common
-            3 => 0.02,       // Three characters are more selective
-            4..=6 => 0.01,   // Good selectivity range
-            7..=10 => 0.005, // Very selective
-            _ => 0.001,      // Very long patterns are highly selective
-        };
-
-        // Adjust for common patterns
-        let adjusted_frequency = if self.is_common_pattern(pattern) {
-            estimated_frequency * 10.0 // Common patterns are much more frequent
-        } else {
-            estimated_frequency
-        };
-
-        adjusted_frequency <= self.config.min_selectivity_threshold
-    }
-
-    /// Check if a pattern is too common to be useful for prefiltering
-    fn is_common_pattern(&self, pattern: &str) -> bool {
-        // Only skip extremely common patterns that provide no security value
-        // Keep security-relevant patterns like "exe", "dll", EventIDs, etc.
-        matches!(
-            pattern,
-            // Only filter out truly generic patterns
-            "true" | "false" | "null" | "" |
-            // Very generic words that appear in almost all events
-            "the" | "and" | "or" | "of" | "to" | "in" | "for" | "on" | "at" | "by"
-        )
-    }
-
-    /// Extract literal substrings from regex patterns
-    fn extract_literals_from_regex(&self, regex: &str) -> Vec<String> {
-        let mut literals = Vec::new();
-
-        // Simple extraction: look for literal character sequences
-        // This is a basic implementation - could be enhanced with proper regex parsing
-        let mut current_literal = String::new();
-        let mut in_literal = true;
-
-        for ch in regex.chars() {
-            match ch {
-                // Regex metacharacters that break literal sequences
-                '.' | '*' | '+' | '?' | '^' | '$' | '|' | '(' | ')' | '[' | ']' | '{' | '}'
-                | '\\' => {
-                    if !current_literal.is_empty()
-                        && current_literal.len() >= self.config.min_pattern_length
-                    {
-                        literals.push(current_literal.clone());
-                    }
-                    current_literal.clear();
-                    in_literal = false;
-                }
-                _ => {
-                    if in_literal {
-                        current_literal.push(ch);
-                    } else {
-                        current_literal.clear();
-                        current_literal.push(ch);
-                        in_literal = true;
-                    }
-                }
-            }
-        }
-
-        // Add final literal if any
-        if !current_literal.is_empty() && current_literal.len() >= self.config.min_pattern_length {
-            literals.push(current_literal);
-        }
-
-        literals
-    }
-
-    /// Extract patterns from numeric range conditions
-    fn extract_patterns_from_range(&self, range: &str) -> Vec<String> {
-        let mut patterns = Vec::new();
-
-        // Extract individual numbers from range expressions like "1..10" or "100-200"
-        let numbers: Vec<&str> = range.split(&['-', '.', ':', '|'][..]).collect();
-
-        for num_str in numbers {
-            let trimmed = num_str.trim();
-            if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
-                patterns.push(trimmed.to_string());
-            }
-        }
-
-        patterns
-    }
-
-    /// Extract patterns from CIDR network ranges
-    fn extract_patterns_from_cidr(&self, cidr: &str) -> Vec<String> {
-        let mut patterns = Vec::new();
-
-        // Extract IP components from CIDR notation like "192.168.1.0/24"
-        if let Some(ip_part) = cidr.split('/').next() {
-            // Split IP into octets
-            let octets: Vec<&str> = ip_part.split('.').collect();
-            for octet in octets {
-                if !octet.is_empty() && octet != "0" {
-                    patterns.push(octet.to_string());
-                }
-            }
-
-            // Also include the full IP without CIDR mask
-            patterns.push(ip_part.to_string());
-        }
-
-        patterns
-    }
-
     fn build(self) -> Result<LiteralPrefilter> {
         let total_patterns = self.exact_patterns.len() + self.contains_patterns.len();
 
-        // Choose strategy based on pattern count
-        let strategy = if total_patterns >= AHOCORASICK_THRESHOLD {
-            // Use AhoCorasick for large pattern sets
-            let mut all_patterns = self.exact_patterns.clone();
-            all_patterns.extend(self.contains_patterns.clone());
+        // Combine all patterns for AhoCorasick
+        let mut all_patterns = self.exact_patterns.clone();
+        all_patterns.extend(self.contains_patterns.clone());
 
-            let automaton = AhoCorasickBuilder::new()
-                .match_kind(MatchKind::LeftmostFirst)
-                .ascii_case_insensitive(self.config.case_insensitive)
-                .build(&all_patterns)
-                .map_err(|e| {
-                    SigmaError::CompilationError(format!(
-                        "Failed to build AhoCorasick automaton: {e}"
-                    ))
-                })?;
-
-            PrefilterStrategy::AhoCorasick {
-                automaton,
-                patterns: all_patterns,
-                pattern_to_primitives: self.pattern_to_primitives,
-            }
+        // Build AhoCorasick automaton (or None if no patterns)
+        let automaton = if all_patterns.is_empty() {
+            None
         } else {
-            // Use simple matching for small pattern sets
-
-            PrefilterStrategy::Simple {
-                exact_patterns: self.exact_patterns,
-                contains_patterns: self.contains_patterns,
-                pattern_to_primitives: self.pattern_to_primitives,
-                case_insensitive: self.config.case_insensitive,
-            }
+            Some(
+                AhoCorasickBuilder::new()
+                    .match_kind(MatchKind::LeftmostFirst)
+                    .ascii_case_insensitive(self.config.case_insensitive)
+                    .build(&all_patterns)
+                    .map_err(|e| {
+                        SigmaError::CompilationError(format!(
+                            "Failed to build AhoCorasick automaton: {e}"
+                        ))
+                    })?,
+            )
         };
 
         // Calculate statistics
         let estimated_selectivity = LiteralPrefilter::estimate_selectivity(total_patterns);
-        let memory_usage = LiteralPrefilter::estimate_memory_usage(total_patterns, &strategy);
+        let memory_usage = LiteralPrefilter::estimate_memory_usage(total_patterns);
 
         let stats = PrefilterStats {
             pattern_count: total_patterns,
@@ -620,7 +292,12 @@ impl PatternBuilder {
             memory_usage,
         };
 
-        Ok(LiteralPrefilter { strategy, stats })
+        Ok(LiteralPrefilter {
+            automaton,
+            patterns: all_patterns,
+            pattern_to_primitives: self.pattern_to_primitives,
+            stats,
+        })
     }
 }
 
@@ -657,12 +334,9 @@ impl LiteralPrefilter {
         // Return empty prefilter if disabled
         if !config.enabled {
             return Ok(LiteralPrefilter {
-                strategy: PrefilterStrategy::Simple {
-                    exact_patterns: Vec::new(),
-                    contains_patterns: Vec::new(),
-                    pattern_to_primitives: HashMap::new(),
-                    case_insensitive: config.case_insensitive,
-                },
+                automaton: None,
+                patterns: Vec::new(),
+                pattern_to_primitives: HashMap::new(),
                 stats: PrefilterStats {
                     pattern_count: 0,
                     field_count: 0,
@@ -699,40 +373,20 @@ impl LiteralPrefilter {
     ///
     /// - Zero-allocation recursive JSON traversal
     /// - No JSON serialization - works directly with parsed values
-    /// - AhoCorasick for large pattern sets, simple matching for small sets
+    /// - AhoCorasick automaton for fast multi-pattern matching
     pub fn matches(&self, event: &Value) -> Result<bool> {
-        match &self.strategy {
-            PrefilterStrategy::Simple {
-                exact_patterns,
-                contains_patterns,
-                case_insensitive,
-                ..
-            } => {
-                // No patterns means no prefiltering - allow all events through
-                if exact_patterns.is_empty() && contains_patterns.is_empty() {
-                    return Ok(true);
-                }
+        // No patterns means no prefiltering - allow all events through
+        if self.patterns.is_empty() {
+            return Ok(true);
+        }
+
+        // Use AhoCorasick if available, otherwise allow through
+        match &self.automaton {
+            Some(automaton) => {
                 // Search for patterns - return true only if patterns are found
-                Ok(Self::search_json_value_simple(
-                    event,
-                    exact_patterns,
-                    contains_patterns,
-                    *case_insensitive,
-                ))
-            }
-            PrefilterStrategy::AhoCorasick {
-                automaton,
-                patterns,
-                ..
-            } => {
-                // No patterns means no prefiltering - allow all events through
-                if patterns.is_empty() {
-                    return Ok(true);
-                }
-                // Search for patterns - return true only if patterns are found
-                // Note: AhoCorasick handles case insensitivity internally via ascii_case_insensitive()
                 Ok(Self::search_json_value_ahocorasick(event, automaton))
             }
+            None => Ok(true), // No automaton means allow all through
         }
     }
 
@@ -754,38 +408,18 @@ impl LiteralPrefilter {
     /// - Zero traversal - single AhoCorasick pass over the entire JSON string
     /// - Optimal for high-throughput scenarios where JSON is already a string
     pub fn matches_raw(&self, json_str: &str) -> Result<bool> {
-        match &self.strategy {
-            PrefilterStrategy::Simple {
-                exact_patterns,
-                contains_patterns,
-                case_insensitive,
-                ..
-            } => {
-                // No patterns means no prefiltering - allow all events through
-                if exact_patterns.is_empty() && contains_patterns.is_empty() {
-                    return Ok(true);
-                }
+        // No patterns means no prefiltering - allow all events through
+        if self.patterns.is_empty() {
+            return Ok(true);
+        }
+
+        // Use AhoCorasick if available
+        match &self.automaton {
+            Some(automaton) => {
                 // Search for patterns - return true only if patterns are found
-                Ok(self.search_string_simple(
-                    json_str,
-                    exact_patterns,
-                    contains_patterns,
-                    *case_insensitive,
-                ))
-            }
-            PrefilterStrategy::AhoCorasick {
-                automaton,
-                patterns,
-                ..
-            } => {
-                // No patterns means no prefiltering - allow all events through
-                if patterns.is_empty() {
-                    return Ok(true);
-                }
-                // Search for patterns - return true only if patterns are found
-                // Note: AhoCorasick handles case insensitivity internally via ascii_case_insensitive()
                 Ok(automaton.is_match(json_str))
             }
+            None => Ok(true), // No automaton means allow all through
         }
     }
 
@@ -826,166 +460,14 @@ impl LiteralPrefilter {
         }
     }
 
-    /// Recursively search JSON value for patterns (simple strategy).
-    fn search_json_value_simple(
-        value: &Value,
-        exact_patterns: &[String],
-        contains_patterns: &[String],
-        case_insensitive: bool,
-    ) -> bool {
-        match value {
-            Value::String(s) => {
-                // Check exact matches first (fastest)
-                if case_insensitive {
-                    let s_lower = s.to_ascii_lowercase();
-                    if exact_patterns.contains(&s_lower) {
-                        return true;
-                    }
-                    // Check contains matches
-                    contains_patterns
-                        .iter()
-                        .any(|pattern| s_lower.contains(pattern))
-                } else {
-                    if exact_patterns.iter().any(|pattern| s == pattern) {
-                        return true;
-                    }
-                    // Check contains matches
-                    contains_patterns.iter().any(|pattern| s.contains(pattern))
-                }
-            }
-            Value::Number(n) => {
-                // Convert number to string only once and check patterns
-                let num_str = n.to_string();
-                if case_insensitive {
-                    let num_str_lower = num_str.to_ascii_lowercase();
-                    if exact_patterns
-                        .iter()
-                        .any(|pattern| &num_str_lower == pattern)
-                    {
-                        return true;
-                    }
-                    contains_patterns
-                        .iter()
-                        .any(|pattern| num_str_lower.contains(pattern))
-                } else {
-                    if exact_patterns.iter().any(|pattern| &num_str == pattern) {
-                        return true;
-                    }
-                    contains_patterns
-                        .iter()
-                        .any(|pattern| num_str.contains(pattern))
-                }
-            }
-            Value::Bool(b) => {
-                // Check boolean values efficiently
-                let bool_str = if *b { "true" } else { "false" };
-                if case_insensitive {
-                    // Boolean strings are already lowercase, so no conversion needed
-                    if exact_patterns.iter().any(|pattern| pattern == bool_str) {
-                        return true;
-                    }
-                    contains_patterns
-                        .iter()
-                        .any(|pattern| bool_str.contains(pattern))
-                } else {
-                    if exact_patterns.iter().any(|pattern| pattern == bool_str) {
-                        return true;
-                    }
-                    contains_patterns
-                        .iter()
-                        .any(|pattern| bool_str.contains(pattern))
-                }
-            }
-            Value::Array(arr) => {
-                // Search all array elements with early termination
-                arr.iter().any(|item| {
-                    Self::search_json_value_simple(
-                        item,
-                        exact_patterns,
-                        contains_patterns,
-                        case_insensitive,
-                    )
-                })
-            }
-            Value::Object(obj) => {
-                // Search all object values with early termination
-                obj.values().any(|item| {
-                    Self::search_json_value_simple(
-                        item,
-                        exact_patterns,
-                        contains_patterns,
-                        case_insensitive,
-                    )
-                })
-            }
-            Value::Null => false, // Null values don't match anything
-        }
-    }
-
-    /// Search raw JSON string for patterns (simple strategy).
-    ///
-    /// This is used for small pattern sets where AhoCorasick overhead isn't justified.
-    /// Searches the raw JSON string directly without any parsing.
-    fn search_string_simple(
-        &self,
-        json_str: &str,
-        exact_patterns: &[String],
-        contains_patterns: &[String],
-        case_insensitive: bool,
-    ) -> bool {
-        // For exact patterns, we need to be careful about JSON context
-        // A simple contains check might match inside field names or values incorrectly
-        // For now, use contains for both - this is a trade-off between accuracy and performance
-
-        if case_insensitive {
-            let json_str_lower = json_str.to_ascii_lowercase();
-            for pattern in exact_patterns {
-                if json_str_lower.contains(pattern) {
-                    return true;
-                }
-            }
-
-            for pattern in contains_patterns {
-                if json_str_lower.contains(pattern) {
-                    return true;
-                }
-            }
-        } else {
-            for pattern in exact_patterns {
-                if json_str.contains(pattern) {
-                    return true;
-                }
-            }
-
-            for pattern in contains_patterns {
-                if json_str.contains(pattern) {
-                    return true;
-                }
-            }
-        }
-
-        false
-    }
-
     /// Fast path for checking if any patterns match without detailed information.
     ///
     /// This is optimized for the common case where we only need a boolean result.
     #[inline]
     pub fn has_match(&self, text: &str) -> bool {
-        match &self.strategy {
-            PrefilterStrategy::Simple {
-                exact_patterns,
-                contains_patterns,
-                ..
-            } => {
-                if exact_patterns.iter().any(|pattern| text == pattern) {
-                    return true;
-                }
-                contains_patterns
-                    .iter()
-                    .any(|pattern| text.contains(pattern))
-            }
-            PrefilterStrategy::AhoCorasick { automaton, .. } => automaton.is_match(text),
+        match &self.automaton {
+            Some(automaton) => automaton.is_match(text),
+            None => false, // No automaton means no patterns
         }
     }
 
@@ -1011,80 +493,24 @@ impl LiteralPrefilter {
         field_name: &str,
         matches: &mut Vec<PrefilterMatch>,
     ) {
-        match &self.strategy {
-            PrefilterStrategy::Simple {
-                exact_patterns,
-                contains_patterns,
-                pattern_to_primitives,
-                case_insensitive,
-            } => {
-                let search_text = if *case_insensitive {
-                    text.to_ascii_lowercase()
-                } else {
-                    text.to_string()
-                };
+        if let Some(automaton) = &self.automaton {
+            // AhoCorasick handles case insensitivity internally via ascii_case_insensitive()
+            for mat in automaton.find_iter(text) {
+                let pattern_idx = mat.pattern().as_usize();
+                if let Some(pattern) = self.patterns.get(pattern_idx) {
+                    let primitive_ids = self
+                        .pattern_to_primitives
+                        .get(&pattern_idx)
+                        .cloned()
+                        .unwrap_or_default();
 
-                // Check exact patterns
-                for (idx, pattern) in exact_patterns.iter().enumerate() {
-                    if search_text.contains(pattern) {
-                        if let Some(start) = search_text.find(pattern) {
-                            let primitive_ids =
-                                pattern_to_primitives.get(&idx).cloned().unwrap_or_default();
-
-                            matches.push(PrefilterMatch {
-                                field: field_name.to_string(),
-                                pattern: pattern.clone(),
-                                start,
-                                end: start + pattern.len(),
-                                primitive_ids,
-                            });
-                        }
-                    }
-                }
-
-                // Check contains patterns
-                for (idx, pattern) in contains_patterns.iter().enumerate() {
-                    if search_text.contains(pattern) {
-                        if let Some(start) = search_text.find(pattern) {
-                            let primitive_ids = pattern_to_primitives
-                                .get(&(idx + 1000)) // Offset used in builder
-                                .cloned()
-                                .unwrap_or_default();
-
-                            matches.push(PrefilterMatch {
-                                field: field_name.to_string(),
-                                pattern: pattern.clone(),
-                                start,
-                                end: start + pattern.len(),
-                                primitive_ids,
-                            });
-                        }
-                    }
-                }
-            }
-            PrefilterStrategy::AhoCorasick {
-                automaton,
-                patterns,
-                pattern_to_primitives,
-                ..
-            } => {
-                // AhoCorasick handles case insensitivity internally via ascii_case_insensitive()
-                for mat in automaton.find_iter(text) {
-                    let pattern_idx = mat.pattern().as_usize();
-                    if let Some(pattern) = patterns.get(pattern_idx) {
-                        let primitive_ids = pattern_to_primitives
-                            .get(&pattern_idx)
-                            .cloned()
-                            .unwrap_or_default();
-
-                        matches.push(PrefilterMatch {
-                            field: field_name.to_string(),
-                            pattern: pattern.clone(),
-                            start: mat.start(),
-                            end: mat.end(),
-                            primitive_ids,
-                        });
-                    }
+                    matches.push(PrefilterMatch {
+                        field: field_name.to_string(),
+                        pattern: pattern.clone(),
+                        start: mat.start(),
+                        end: mat.end(),
+                        primitive_ids,
+                    });
                 }
             }
         }
@@ -1095,33 +521,15 @@ impl LiteralPrefilter {
         &self.stats
     }
 
-    /// Check if a primitive is suitable for prefiltering based on configuration.
+    /// Check if a primitive is suitable for prefiltering.
     ///
-    /// Returns `true` for primitives that can contribute useful patterns according
-    /// to the extraction strategy and configuration settings.
-    fn is_suitable_for_prefiltering(primitive: &Primitive, config: &PrefilterConfig) -> bool {
-        // Skip primitives with modifiers unless explicitly enabled
-        if !config.include_modified_conditions && !primitive.modifiers.is_empty() {
-            return false;
-        }
-
-        match config.extraction_strategy {
-            ExtractionStrategy::ExactOnly => {
-                // Only exact string matches without regex metacharacters
-                primitive.match_type == "equals" && Self::has_no_regex_metacharacters(primitive)
-            }
-            ExtractionStrategy::Substrings => {
-                // Include literal match types
-                matches!(
-                    primitive.match_type.as_str(),
-                    "equals" | "contains" | "startswith" | "endswith"
-                ) && Self::has_no_regex_metacharacters(primitive)
-            }
-            ExtractionStrategy::Comprehensive => {
-                // Include most condition types, even complex ones
-                !matches!(primitive.match_type.as_str(), "unknown" | "invalid")
-            }
-        }
+    /// Returns `true` for primitives that can contribute useful literal patterns.
+    fn is_suitable_for_prefiltering(primitive: &Primitive, _config: &PrefilterConfig) -> bool {
+        // Include literal match types only
+        matches!(
+            primitive.match_type.as_str(),
+            "equals" | "contains" | "startswith" | "endswith"
+        ) && Self::has_no_regex_metacharacters(primitive)
     }
 
     /// Check if a primitive contains regex metacharacters
@@ -1174,27 +582,13 @@ impl LiteralPrefilter {
     /// Estimate memory usage of the prefilter.
     ///
     /// Provides a rough estimate for capacity planning and optimization decisions.
-    fn estimate_memory_usage(pattern_count: usize, strategy: &PrefilterStrategy) -> usize {
-        match strategy {
-            PrefilterStrategy::Simple {
-                exact_patterns,
-                contains_patterns,
-                ..
-            } => {
-                let exact_memory: usize = exact_patterns.iter().map(|p| p.capacity()).sum();
-                let contains_memory: usize = contains_patterns.iter().map(|p| p.capacity()).sum();
-                let overhead = pattern_count * 8; // Vec overhead
-                exact_memory + contains_memory + overhead
-            }
-            PrefilterStrategy::AhoCorasick { patterns, .. } => {
-                let pattern_memory: usize = patterns.iter().map(|p| p.capacity()).sum();
-                // AhoCorasick automaton overhead (rough estimate)
-                let state_count_estimate = pattern_count * 2;
-                let transition_overhead = state_count_estimate * 256; // ASCII transitions
-                let state_overhead = state_count_estimate * 32; // State metadata
-                pattern_memory + transition_overhead + state_overhead
-            }
-        }
+    fn estimate_memory_usage(pattern_count: usize) -> usize {
+        // Rough estimate for AhoCorasick automaton
+        let state_count_estimate = pattern_count * 2;
+        let transition_overhead = state_count_estimate * 256; // ASCII transitions
+        let state_overhead = state_count_estimate * 32; // State metadata
+        let pattern_overhead = pattern_count * 20; // Average pattern size estimate
+        pattern_overhead + transition_overhead + state_overhead
     }
 }
 
@@ -1256,27 +650,11 @@ mod tests {
         assert_eq!(stats.pattern_count, 2);
         assert_eq!(stats.field_count, 0); // No longer tracking fields
 
-        // Should use simple strategy for small pattern count
-        match &prefilter.strategy {
-            PrefilterStrategy::Simple {
-                exact_patterns,
-                contains_patterns,
-                ..
-            } => {
-                assert_eq!(exact_patterns.len() + contains_patterns.len(), 2);
-                assert!(
-                    exact_patterns.contains(&"4624".to_string())
-                        || contains_patterns.contains(&"4624".to_string())
-                );
-                assert!(
-                    exact_patterns.contains(&"powershell".to_string())
-                        || contains_patterns.contains(&"powershell".to_string())
-                );
-            }
-            PrefilterStrategy::AhoCorasick { .. } => {
-                panic!("Should use simple strategy for small pattern count");
-            }
-        }
+        // Should have patterns in the automaton
+        assert_eq!(prefilter.patterns.len(), 2);
+        assert!(prefilter.patterns.contains(&"4624".to_string()));
+        assert!(prefilter.patterns.contains(&"powershell".to_string()));
+        assert!(prefilter.automaton.is_some());
     }
 
     #[test]
@@ -1350,30 +728,12 @@ mod tests {
         };
 
         let prefilter = LiteralPrefilter::with_config(&primitives, config).unwrap();
-        // Should use simple strategy and include all equals literals (no filtering of equals)
-        assert_eq!(prefilter.stats().pattern_count, 2);
-        match &prefilter.strategy {
-            PrefilterStrategy::Simple {
-                exact_patterns,
-                contains_patterns,
-                ..
-            } => {
-                let all = exact_patterns.len() + contains_patterns.len();
-                assert_eq!(all, 2);
-                // Both literals should be present
-                assert!(
-                    exact_patterns.contains(&"test".to_string())
-                        || contains_patterns.contains(&"test".to_string())
-                );
-                assert!(
-                    exact_patterns.contains(&"a".to_string())
-                        || contains_patterns.contains(&"a".to_string())
-                );
-            }
-            PrefilterStrategy::AhoCorasick { .. } => {
-                panic!("Should use simple strategy for small pattern count");
-            }
-        }
+        // Should filter out patterns shorter than min_pattern_length
+        assert_eq!(prefilter.stats().pattern_count, 1);
+        assert_eq!(prefilter.patterns.len(), 1);
+        // Only "test" should be present, "a" should be filtered out
+        assert!(prefilter.patterns.contains(&"test".to_string()));
+        assert!(!prefilter.patterns.contains(&"a".to_string()));
     }
 
     #[test]
@@ -1400,8 +760,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ahocorasick_strategy_selection() {
-        // Create enough patterns to trigger AhoCorasick strategy
+    fn test_ahocorasick_prefilter() {
+        // Create patterns for AhoCorasick automaton
         let mut primitives = Vec::new();
         for i in 0..25 {
             primitives.push(Primitive::new(
@@ -1414,15 +774,9 @@ mod tests {
 
         let prefilter = LiteralPrefilter::from_primitives(&primitives).unwrap();
 
-        // Should use AhoCorasick strategy for 25 patterns
-        match &prefilter.strategy {
-            PrefilterStrategy::AhoCorasick { patterns, .. } => {
-                assert_eq!(patterns.len(), 25);
-            }
-            PrefilterStrategy::Simple { .. } => {
-                panic!("Should use AhoCorasick strategy for 25 patterns");
-            }
-        }
+        // Should use AhoCorasick automaton for patterns
+        assert_eq!(prefilter.patterns.len(), 25);
+        assert!(prefilter.automaton.is_some());
 
         // Test that it correctly filters non-matching events
         let non_matching_event = json!({
