@@ -285,6 +285,10 @@ impl CompiledPrimitive {
                 }
                 Ok(false)
             }),
+            "regex" => crate::matcher::defaults::create_regex_match(),
+            "range" => crate::matcher::advanced::create_range_match(),
+            "cidr" => crate::matcher::advanced::create_cidr_match(),
+            "fuzzy" => crate::matcher::advanced::create_fuzzy_match(),
             _ => {
                 // Default to exact match for unknown types
                 Arc::new(|field_value, values, _modifiers| {

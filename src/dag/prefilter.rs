@@ -60,9 +60,11 @@ enum PrefilterStrategy {
         exact_patterns: Vec<String>,
         contains_patterns: Vec<String>,
         pattern_to_primitives: HashMap<usize, Vec<u32>>,
+        case_insensitive: bool,
     },
     /// AhoCorasick automaton for large pattern sets (>= 20 patterns)
     /// Uses zero-allocation JSON traversal - no string serialization
+    /// Case insensitivity is handled internally by the automaton
     AhoCorasick {
         automaton: AhoCorasick,
         patterns: Vec<String>,
@@ -292,6 +294,29 @@ impl PatternBuilder {
         let extracted_patterns = self.extract_patterns_from_primitive(primitive);
 
         for pattern in extracted_patterns {
+            // Safety: never drop literal-ish patterns; guarantees no false negatives for literal matchers
+            let is_literal_ish = matches!(
+                primitive.match_type.as_str(),
+                "equals" | "contains" | "startswith" | "endswith"
+            );
+
+            if is_literal_ish {
+                let final_pattern = if self.config.case_insensitive {
+                    pattern.to_lowercase()
+                } else {
+                    pattern
+                };
+                self.add_pattern_to_collection(primitive_id, &final_pattern, &primitive.match_type);
+                if let Some(max) = self.config.max_patterns {
+                    if self.exact_patterns.len() + self.contains_patterns.len() >= max {
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            // For non-literal matchers, apply filters to avoid performance degradation
+
             // Apply length filters
             if pattern.len() < self.config.min_pattern_length {
                 continue;
@@ -579,6 +604,7 @@ impl PatternBuilder {
                 exact_patterns: self.exact_patterns,
                 contains_patterns: self.contains_patterns,
                 pattern_to_primitives: self.pattern_to_primitives,
+                case_insensitive: self.config.case_insensitive,
             }
         };
 
@@ -635,6 +661,7 @@ impl LiteralPrefilter {
                     exact_patterns: Vec::new(),
                     contains_patterns: Vec::new(),
                     pattern_to_primitives: HashMap::new(),
+                    case_insensitive: config.case_insensitive,
                 },
                 stats: PrefilterStats {
                     pattern_count: 0,
@@ -678,6 +705,7 @@ impl LiteralPrefilter {
             PrefilterStrategy::Simple {
                 exact_patterns,
                 contains_patterns,
+                case_insensitive,
                 ..
             } => {
                 // No patterns means no prefiltering - allow all events through
@@ -689,6 +717,7 @@ impl LiteralPrefilter {
                     event,
                     exact_patterns,
                     contains_patterns,
+                    *case_insensitive,
                 ))
             }
             PrefilterStrategy::AhoCorasick {
@@ -701,6 +730,7 @@ impl LiteralPrefilter {
                     return Ok(true);
                 }
                 // Search for patterns - return true only if patterns are found
+                // Note: AhoCorasick handles case insensitivity internally via ascii_case_insensitive()
                 Ok(Self::search_json_value_ahocorasick(event, automaton))
             }
         }
@@ -728,6 +758,7 @@ impl LiteralPrefilter {
             PrefilterStrategy::Simple {
                 exact_patterns,
                 contains_patterns,
+                case_insensitive,
                 ..
             } => {
                 // No patterns means no prefiltering - allow all events through
@@ -735,7 +766,12 @@ impl LiteralPrefilter {
                     return Ok(true);
                 }
                 // Search for patterns - return true only if patterns are found
-                Ok(self.search_string_simple(json_str, exact_patterns, contains_patterns))
+                Ok(self.search_string_simple(
+                    json_str,
+                    exact_patterns,
+                    contains_patterns,
+                    *case_insensitive,
+                ))
             }
             PrefilterStrategy::AhoCorasick {
                 automaton,
@@ -747,6 +783,7 @@ impl LiteralPrefilter {
                     return Ok(true);
                 }
                 // Search for patterns - return true only if patterns are found
+                // Note: AhoCorasick handles case insensitivity internally via ascii_case_insensitive()
                 Ok(automaton.is_match(json_str))
             }
         }
@@ -794,46 +831,91 @@ impl LiteralPrefilter {
         value: &Value,
         exact_patterns: &[String],
         contains_patterns: &[String],
+        case_insensitive: bool,
     ) -> bool {
         match value {
             Value::String(s) => {
                 // Check exact matches first (fastest)
-                if exact_patterns.iter().any(|pattern| s == pattern) {
-                    return true;
+                if case_insensitive {
+                    let s_lower = s.to_ascii_lowercase();
+                    if exact_patterns.contains(&s_lower) {
+                        return true;
+                    }
+                    // Check contains matches
+                    contains_patterns
+                        .iter()
+                        .any(|pattern| s_lower.contains(pattern))
+                } else {
+                    if exact_patterns.iter().any(|pattern| s == pattern) {
+                        return true;
+                    }
+                    // Check contains matches
+                    contains_patterns.iter().any(|pattern| s.contains(pattern))
                 }
-                // Check contains matches
-                contains_patterns.iter().any(|pattern| s.contains(pattern))
             }
             Value::Number(n) => {
                 // Convert number to string only once and check patterns
                 let num_str = n.to_string();
-                if exact_patterns.iter().any(|pattern| &num_str == pattern) {
-                    return true;
+                if case_insensitive {
+                    let num_str_lower = num_str.to_ascii_lowercase();
+                    if exact_patterns
+                        .iter()
+                        .any(|pattern| &num_str_lower == pattern)
+                    {
+                        return true;
+                    }
+                    contains_patterns
+                        .iter()
+                        .any(|pattern| num_str_lower.contains(pattern))
+                } else {
+                    if exact_patterns.iter().any(|pattern| &num_str == pattern) {
+                        return true;
+                    }
+                    contains_patterns
+                        .iter()
+                        .any(|pattern| num_str.contains(pattern))
                 }
-                contains_patterns
-                    .iter()
-                    .any(|pattern| num_str.contains(pattern))
             }
             Value::Bool(b) => {
                 // Check boolean values efficiently
                 let bool_str = if *b { "true" } else { "false" };
-                if exact_patterns.iter().any(|pattern| pattern == bool_str) {
-                    return true;
+                if case_insensitive {
+                    // Boolean strings are already lowercase, so no conversion needed
+                    if exact_patterns.iter().any(|pattern| pattern == bool_str) {
+                        return true;
+                    }
+                    contains_patterns
+                        .iter()
+                        .any(|pattern| bool_str.contains(pattern))
+                } else {
+                    if exact_patterns.iter().any(|pattern| pattern == bool_str) {
+                        return true;
+                    }
+                    contains_patterns
+                        .iter()
+                        .any(|pattern| bool_str.contains(pattern))
                 }
-                contains_patterns
-                    .iter()
-                    .any(|pattern| bool_str.contains(pattern))
             }
             Value::Array(arr) => {
                 // Search all array elements with early termination
                 arr.iter().any(|item| {
-                    Self::search_json_value_simple(item, exact_patterns, contains_patterns)
+                    Self::search_json_value_simple(
+                        item,
+                        exact_patterns,
+                        contains_patterns,
+                        case_insensitive,
+                    )
                 })
             }
             Value::Object(obj) => {
                 // Search all object values with early termination
                 obj.values().any(|item| {
-                    Self::search_json_value_simple(item, exact_patterns, contains_patterns)
+                    Self::search_json_value_simple(
+                        item,
+                        exact_patterns,
+                        contains_patterns,
+                        case_insensitive,
+                    )
                 })
             }
             Value::Null => false, // Null values don't match anything
@@ -849,19 +931,36 @@ impl LiteralPrefilter {
         json_str: &str,
         exact_patterns: &[String],
         contains_patterns: &[String],
+        case_insensitive: bool,
     ) -> bool {
         // For exact patterns, we need to be careful about JSON context
         // A simple contains check might match inside field names or values incorrectly
         // For now, use contains for both - this is a trade-off between accuracy and performance
-        for pattern in exact_patterns {
-            if json_str.contains(pattern) {
-                return true;
-            }
-        }
 
-        for pattern in contains_patterns {
-            if json_str.contains(pattern) {
-                return true;
+        if case_insensitive {
+            let json_str_lower = json_str.to_ascii_lowercase();
+            for pattern in exact_patterns {
+                if json_str_lower.contains(pattern) {
+                    return true;
+                }
+            }
+
+            for pattern in contains_patterns {
+                if json_str_lower.contains(pattern) {
+                    return true;
+                }
+            }
+        } else {
+            for pattern in exact_patterns {
+                if json_str.contains(pattern) {
+                    return true;
+                }
+            }
+
+            for pattern in contains_patterns {
+                if json_str.contains(pattern) {
+                    return true;
+                }
             }
         }
 
@@ -917,11 +1016,18 @@ impl LiteralPrefilter {
                 exact_patterns,
                 contains_patterns,
                 pattern_to_primitives,
+                case_insensitive,
             } => {
+                let search_text = if *case_insensitive {
+                    text.to_ascii_lowercase()
+                } else {
+                    text.to_string()
+                };
+
                 // Check exact patterns
                 for (idx, pattern) in exact_patterns.iter().enumerate() {
-                    if text.contains(pattern) {
-                        if let Some(start) = text.find(pattern) {
+                    if search_text.contains(pattern) {
+                        if let Some(start) = search_text.find(pattern) {
                             let primitive_ids =
                                 pattern_to_primitives.get(&idx).cloned().unwrap_or_default();
 
@@ -938,8 +1044,8 @@ impl LiteralPrefilter {
 
                 // Check contains patterns
                 for (idx, pattern) in contains_patterns.iter().enumerate() {
-                    if text.contains(pattern) {
-                        if let Some(start) = text.find(pattern) {
+                    if search_text.contains(pattern) {
+                        if let Some(start) = search_text.find(pattern) {
                             let primitive_ids = pattern_to_primitives
                                 .get(&(idx + 1000)) // Offset used in builder
                                 .cloned()
@@ -960,7 +1066,9 @@ impl LiteralPrefilter {
                 automaton,
                 patterns,
                 pattern_to_primitives,
+                ..
             } => {
+                // AhoCorasick handles case insensitivity internally via ascii_case_insensitive()
                 for mat in automaton.find_iter(text) {
                     let pattern_idx = mat.pattern().as_usize();
                     if let Some(pattern) = patterns.get(pattern_idx) {
@@ -1242,18 +1350,24 @@ mod tests {
         };
 
         let prefilter = LiteralPrefilter::with_config(&primitives, config).unwrap();
-        // Should use simple strategy and have 1 pattern
-        assert_eq!(prefilter.stats().pattern_count, 1);
+        // Should use simple strategy and include all equals literals (no filtering of equals)
+        assert_eq!(prefilter.stats().pattern_count, 2);
         match &prefilter.strategy {
             PrefilterStrategy::Simple {
                 exact_patterns,
                 contains_patterns,
                 ..
             } => {
-                assert_eq!(exact_patterns.len() + contains_patterns.len(), 1);
+                let all = exact_patterns.len() + contains_patterns.len();
+                assert_eq!(all, 2);
+                // Both literals should be present
                 assert!(
                     exact_patterns.contains(&"test".to_string())
                         || contains_patterns.contains(&"test".to_string())
+                );
+                assert!(
+                    exact_patterns.contains(&"a".to_string())
+                        || contains_patterns.contains(&"a".to_string())
                 );
             }
             PrefilterStrategy::AhoCorasick { .. } => {
