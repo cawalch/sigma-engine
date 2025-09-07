@@ -17,22 +17,18 @@
 //! let results = engine.evaluate(&event_data)?;
 //! ```
 
-pub mod batch_evaluator;
 pub mod builder;
 pub mod engine;
 pub mod evaluator;
 pub mod optimizer;
-pub mod parallel_evaluator;
 pub mod prefilter;
 pub mod types;
 
 // Re-export main types for convenience
-pub use batch_evaluator::{BatchDagEvaluator, BatchMemoryPool};
 pub use builder::DagBuilder;
-pub use engine::DagEngine;
-pub use evaluator::{DagEvaluationResult, DagEvaluator};
+pub use engine::{DagEngine, ParallelConfig};
+pub use evaluator::{DagEvaluationResult, DagEvaluator, EvaluationStrategy, EvaluatorConfig};
 pub use optimizer::DagOptimizer;
-pub use parallel_evaluator::{ParallelConfig, ParallelDagEvaluator, RulePartition};
 pub use types::{CompiledDag, DagNode, DagStatistics, LogicalOp, NodeId, NodeType};
 
 use crate::ir::CompiledRuleset;

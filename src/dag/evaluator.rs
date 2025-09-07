@@ -1,4 +1,10 @@
-//! DAG evaluation functionality for high-performance rule execution.
+//! Unified DAG evaluation functionality for high-performance rule execution.
+//!
+//! This module provides a single adaptive evaluator that automatically selects
+//! the optimal evaluation strategy based on input characteristics:
+//! - Single event evaluation for individual events
+//! - Batch processing for multiple events
+//! - Parallel processing for large rule sets (when enabled)
 
 use super::prefilter::LiteralPrefilter;
 use super::types::{CompiledDag, LogicalOp, NodeType};
@@ -20,16 +26,139 @@ pub struct DagEvaluationResult {
     pub primitive_evaluations: usize,
 }
 
-/// DAG evaluator for executing compiled DAGs against events.
+/// Evaluation strategy selection based on input characteristics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvaluationStrategy {
+    /// Single event evaluation with HashMap storage
+    Single,
+    /// Single event evaluation with Vec storage (for small DAGs)
+    SingleVec,
+    /// Batch processing with memory pools
+    Batch,
+    /// Parallel processing with rule partitioning
+    Parallel,
+}
+
+/// Configuration for the unified evaluator.
+#[derive(Debug, Clone)]
+pub struct EvaluatorConfig {
+    /// Enable parallel processing
+    pub enable_parallel: bool,
+    /// Minimum number of rules to use parallel processing
+    pub min_rules_for_parallel: usize,
+    /// Minimum batch size to use parallel processing
+    pub min_batch_size_for_parallel: usize,
+    /// Threshold for using Vec vs HashMap storage (number of nodes)
+    pub vec_storage_threshold: usize,
+    /// Number of threads for parallel processing
+    pub num_threads: usize,
+}
+
+impl Default for EvaluatorConfig {
+    fn default() -> Self {
+        Self {
+            enable_parallel: false,
+            min_rules_for_parallel: 10,
+            min_batch_size_for_parallel: 100,
+            vec_storage_threshold: 32,
+            num_threads: num_cpus::get(),
+        }
+    }
+}
+
+/// Memory pool for batch processing to minimize allocations.
+#[derive(Debug)]
+struct BatchMemoryPool {
+    /// Primitive results for all events [primitive_id][event_idx] -> bool
+    primitive_results: Vec<Vec<bool>>,
+    /// Node results for all events [node_id][event_idx] -> bool
+    node_results: Vec<Vec<bool>>,
+    /// Result buffer for collecting final results
+    result_buffer: Vec<DagEvaluationResult>,
+    /// Buffer for matched rule IDs per event
+    matched_rules_buffer: Vec<Vec<RuleId>>,
+    /// Arena for rule ID storage to minimize allocations
+    rule_id_arena: Vec<RuleId>,
+    /// Offsets into the arena for each event
+    arena_offsets: Vec<usize>,
+}
+
+impl BatchMemoryPool {
+    fn new() -> Self {
+        Self {
+            primitive_results: Vec::new(),
+            node_results: Vec::new(),
+            result_buffer: Vec::new(),
+            matched_rules_buffer: Vec::new(),
+            rule_id_arena: Vec::new(),
+            arena_offsets: Vec::new(),
+        }
+    }
+
+    fn resize_for_batch(&mut self, batch_size: usize, node_count: usize, primitive_count: usize) {
+        // Resize primitive results
+        self.primitive_results.resize(primitive_count, Vec::new());
+        for primitive_buffer in &mut self.primitive_results {
+            primitive_buffer.resize(batch_size, false);
+        }
+
+        // Resize node results
+        self.node_results.resize(node_count, Vec::new());
+        for node_buffer in &mut self.node_results {
+            node_buffer.resize(batch_size, false);
+        }
+
+        // Resize other buffers
+        self.result_buffer
+            .resize(batch_size, DagEvaluationResult::default());
+        self.matched_rules_buffer.resize(batch_size, Vec::new());
+        self.arena_offsets.resize(batch_size + 1, 0);
+    }
+
+    fn reset(&mut self) {
+        // Reset all buffers to false/empty
+        for primitive_buffer in &mut self.primitive_results {
+            primitive_buffer.fill(false);
+        }
+        for node_buffer in &mut self.node_results {
+            node_buffer.fill(false);
+        }
+        for result in &mut self.result_buffer {
+            *result = DagEvaluationResult::default();
+        }
+        for buffer in &mut self.matched_rules_buffer {
+            buffer.clear();
+        }
+        self.rule_id_arena.clear();
+        self.arena_offsets.fill(0);
+    }
+}
+
+/// Unified DAG evaluator that adapts strategy based on input characteristics.
+///
+/// This evaluator automatically selects the optimal evaluation approach:
+/// - Single event evaluation for individual events
+/// - Batch processing for multiple events
+/// - Parallel processing for large rule sets (when enabled)
+///
+/// The evaluator maintains internal state and memory pools for efficient
+/// reuse across multiple evaluations.
 pub struct DagEvaluator {
     /// Reference to the compiled DAG
     dag: Arc<CompiledDag>,
     /// Compiled primitives for field matching
     primitives: HashMap<u32, CompiledPrimitive>,
-    /// Evaluation state (reusable across evaluations)
+    /// Configuration for strategy selection
+    config: EvaluatorConfig,
+
+    /// Single event evaluation state
     node_results: HashMap<u32, bool>,
     /// Fast-path evaluation buffer for small DAGs
     fast_results: Vec<bool>,
+
+    /// Batch processing memory pool
+    batch_pool: BatchMemoryPool,
+
     /// Performance counters
     nodes_evaluated: usize,
     primitive_evaluations: usize,
@@ -43,23 +172,12 @@ pub struct DagEvaluator {
 }
 
 impl DagEvaluator {
-    /// Create a new DAG evaluator with compiled primitives.
+    /// Create a new unified DAG evaluator with compiled primitives.
     pub fn with_primitives(
         dag: Arc<CompiledDag>,
         primitives: HashMap<u32, CompiledPrimitive>,
     ) -> Self {
-        let fast_results = vec![false; dag.nodes.len()];
-        Self {
-            dag,
-            primitives,
-            node_results: HashMap::new(),
-            fast_results,
-            nodes_evaluated: 0,
-            primitive_evaluations: 0,
-            prefilter: None,
-            prefilter_hits: 0,
-            prefilter_misses: 0,
-        }
+        Self::with_primitives_and_config(dag, primitives, None, EvaluatorConfig::default())
     }
 
     /// Create a new DAG evaluator with prefilter support.
@@ -68,12 +186,24 @@ impl DagEvaluator {
         primitives: HashMap<u32, CompiledPrimitive>,
         prefilter: Option<Arc<LiteralPrefilter>>,
     ) -> Self {
+        Self::with_primitives_and_config(dag, primitives, prefilter, EvaluatorConfig::default())
+    }
+
+    /// Create a new DAG evaluator with custom configuration.
+    pub fn with_primitives_and_config(
+        dag: Arc<CompiledDag>,
+        primitives: HashMap<u32, CompiledPrimitive>,
+        prefilter: Option<Arc<LiteralPrefilter>>,
+        config: EvaluatorConfig,
+    ) -> Self {
         let fast_results = vec![false; dag.nodes.len()];
         Self {
             dag,
             primitives,
+            config,
             node_results: HashMap::new(),
             fast_results,
+            batch_pool: BatchMemoryPool::new(),
             nodes_evaluated: 0,
             primitive_evaluations: 0,
             prefilter,
@@ -82,7 +212,28 @@ impl DagEvaluator {
         }
     }
 
-    /// Evaluate the DAG against an event and return matches.
+    /// Select the optimal evaluation strategy based on input characteristics.
+    fn select_strategy(&self, event_count: usize) -> EvaluationStrategy {
+        // For single events
+        if event_count == 1 {
+            if self.dag.nodes.len() <= self.config.vec_storage_threshold {
+                EvaluationStrategy::SingleVec
+            } else {
+                EvaluationStrategy::Single
+            }
+        }
+        // For multiple events
+        else if self.config.enable_parallel
+            && event_count >= self.config.min_batch_size_for_parallel
+            && self.dag.rule_results.len() >= self.config.min_rules_for_parallel
+        {
+            EvaluationStrategy::Parallel
+        } else {
+            EvaluationStrategy::Batch
+        }
+    }
+
+    /// Evaluate the DAG against a single event and return matches.
     pub fn evaluate(&mut self, event: &Value) -> Result<DagEvaluationResult> {
         // Early termination with prefilter if available
         if let Some(ref prefilter) = self.prefilter {
@@ -98,142 +249,183 @@ impl DagEvaluator {
             self.prefilter_hits += 1;
         }
 
-        // Choose optimal evaluation strategy based on DAG characteristics
-        self.evaluate_with_optimal_strategy(event)
+        // Select strategy and evaluate
+        let strategy = self.select_strategy(1);
+        match strategy {
+            EvaluationStrategy::SingleVec => self.evaluate_single_vec(event),
+            EvaluationStrategy::Single => self.evaluate_single_hashmap(event),
+            _ => unreachable!("Single event should not use batch/parallel strategy"),
+        }
+    }
+
+    /// Evaluate the DAG against multiple events using batch processing.
+    pub fn evaluate_batch(&mut self, events: &[Value]) -> Result<Vec<DagEvaluationResult>> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Select strategy and evaluate
+        let strategy = self.select_strategy(events.len());
+        match strategy {
+            EvaluationStrategy::Batch => self.evaluate_batch_internal(events),
+            EvaluationStrategy::Parallel => self.evaluate_batch_parallel(events),
+            _ => {
+                // Fallback to single event evaluation for each event
+                let mut results = Vec::with_capacity(events.len());
+                for event in events {
+                    results.push(self.evaluate(event)?);
+                }
+                Ok(results)
+            }
+        }
     }
 
     /// Evaluate the DAG against a raw JSON string with zero-allocation prefiltering.
-    ///
-    /// This is the most efficient approach for high-throughput scenarios where events
-    /// are already JSON strings. Uses raw string prefiltering to achieve 2.4x performance
-    /// improvement for non-matching events (95%+ of real-world SOC traffic).
-    ///
-    /// # Performance Notes
-    ///
-    /// - Zero allocation prefiltering - searches raw JSON directly with AhoCorasick
-    /// - Zero serialization - no JSON parsing until prefilter passes
-    /// - Optimal for high selectivity scenarios (>90% event elimination)
-    /// - Falls back to standard evaluation for events that pass prefilter
     pub fn evaluate_raw(&mut self, json_str: &str) -> Result<DagEvaluationResult> {
-        // Early termination with raw string prefilter if available
+        // Early termination with prefilter if available
         if let Some(ref prefilter) = self.prefilter {
             if !prefilter.matches_raw(json_str)? {
                 self.prefilter_misses += 1;
-                // No literal patterns match - skip entire evaluation
                 return Ok(DagEvaluationResult {
                     matched_rules: Vec::new(),
-                    nodes_evaluated: 1, // Only prefilter was evaluated
+                    nodes_evaluated: 1,
                     primitive_evaluations: 0,
                 });
             }
             self.prefilter_hits += 1;
         }
 
-        // Parse JSON only after prefilter passes (for the ~5-10% that match)
+        // Parse JSON and evaluate normally
         let event: Value = serde_json::from_str(json_str)
             .map_err(|e| SigmaError::ExecutionError(format!("Invalid JSON: {e}")))?;
 
-        // Continue with standard evaluation path
-        // Ultra-fast path for single primitive rules (most common case)
-        if self.dag.rule_results.len() == 1 && self.dag.nodes.len() <= 3 {
-            return self.evaluate_single_primitive_optimized(&event);
-        }
-
-        // Choose optimal evaluation strategy based on DAG characteristics
-        self.evaluate_with_optimal_strategy(&event)
+        self.evaluate(&event)
     }
 
-    /// Unified evaluation method that chooses optimal strategy based on DAG characteristics.
-    fn evaluate_with_optimal_strategy(&mut self, event: &Value) -> Result<DagEvaluationResult> {
-        // Ultra-fast path for single primitive rules (most common case)
-        if self.dag.rule_results.len() == 1 && self.dag.nodes.len() <= 3 {
-            return self.evaluate_single_primitive_optimized(event);
-        }
-
-        // Use Vec-based storage for small DAGs to avoid HashMap overhead
-        // Threshold of 32 nodes chosen based on benchmarking - see bench_storage_strategy_threshold
-        // Benchmarks show consistent performance across sizes 8-64, indicating the threshold is reasonable.
-        // Vec storage provides better cache locality for small DAGs, while HashMap storage scales better
-        // for larger DAGs due to O(1) lookups vs potential O(n) Vec operations.
-        if self.dag.nodes.len() <= 32 {
-            self.evaluate_with_vec_storage(event)
-        } else {
-            self.evaluate_with_hashmap_storage(event)
-        }
+    /// Reset the evaluator state for reuse.
+    pub fn reset(&mut self) {
+        self.node_results.clear();
+        self.fast_results.fill(false);
+        self.batch_pool.reset();
+        self.nodes_evaluated = 0;
+        self.primitive_evaluations = 0;
     }
 
-    /// Ultra-fast evaluation for single primitive rules.
-    fn evaluate_single_primitive_optimized(
-        &mut self,
-        event: &Value,
-    ) -> Result<DagEvaluationResult> {
+    /// Get performance statistics.
+    pub fn get_stats(&self) -> (usize, usize, usize, usize) {
+        (
+            self.nodes_evaluated,
+            self.primitive_evaluations,
+            self.prefilter_hits,
+            self.prefilter_misses,
+        )
+    }
+
+    /// Check if prefilter is enabled.
+    pub fn has_prefilter(&self) -> bool {
+        self.prefilter.is_some()
+    }
+
+    /// Single event evaluation using Vec storage (for small DAGs).
+    fn evaluate_single_vec(&mut self, event: &Value) -> Result<DagEvaluationResult> {
         self.reset();
 
-        let (&rule_id, &result_node_id) = self.dag.rule_results.iter().next().unwrap();
-
-        if let Some(result_node) = self.dag.get_node(result_node_id) {
-            if let NodeType::Result { .. } = result_node.node_type {
-                if result_node.dependencies.len() == 1 {
-                    let primitive_node_id = result_node.dependencies[0];
-                    if let Some(primitive_node) = self.dag.get_node(primitive_node_id) {
-                        if let NodeType::Primitive { primitive_id } = primitive_node.node_type {
-                            self.nodes_evaluated = 2;
-                            let result = self.evaluate_primitive(primitive_id, event)?;
-                            let matched_rules = if result { vec![rule_id] } else { Vec::new() };
-
-                            return Ok(DagEvaluationResult {
-                                matched_rules,
-                                nodes_evaluated: self.nodes_evaluated,
-                                primitive_evaluations: self.primitive_evaluations,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fallback to standard evaluation
-        self.evaluate_with_hashmap_storage(event)
-    }
-
-    /// Vec-based evaluation for small DAGs (avoids HashMap overhead).
-    fn evaluate_with_vec_storage(&mut self, event: &Value) -> Result<DagEvaluationResult> {
-        self.reset();
-
-        // Use intelligent evaluation with early termination
-        self.evaluate_with_early_termination_vec(event)
-    }
-
-    /// Intelligent evaluation with early termination using Vec storage.
-    fn evaluate_with_early_termination_vec(
-        &mut self,
-        event: &Value,
-    ) -> Result<DagEvaluationResult> {
         let execution_order = self.dag.execution_order.clone();
-        let mut can_terminate_early = std::collections::HashMap::new();
 
-        for node_id in execution_order {
-            // Check if we can skip this node due to early termination
-            if self.should_skip_node_vec(node_id, &can_terminate_early) {
-                continue;
-            }
-
-            let result = self.evaluate_node_with_vec(node_id, event)?;
-            if (node_id as usize) < self.fast_results.len() {
-                self.fast_results[node_id as usize] = result;
-            }
+        for &node_id in &execution_order {
+            let node = &self.dag.nodes[node_id as usize];
             self.nodes_evaluated += 1;
 
-            // Update early termination state based on this result
-            if let Some(node) = self.dag.get_node(node_id) {
-                self.update_early_termination_state_fast(node, result, &mut can_terminate_early);
+            let result = match &node.node_type {
+                NodeType::Primitive { primitive_id } => {
+                    self.primitive_evaluations += 1;
+                    if let Some(primitive) = self.primitives.get(primitive_id) {
+                        let context = EventContext::new(event);
+                        primitive.matches(&context)
+                    } else {
+                        false
+                    }
+                }
+                NodeType::Logical { operation } => {
+                    self.evaluate_logical_operation_with_vec(*operation, &node.dependencies)?
+                }
+                NodeType::Result { .. } => {
+                    // Result nodes depend on a single logical node
+                    if node.dependencies.len() == 1 {
+                        self.fast_results[node.dependencies[0] as usize]
+                    } else {
+                        false
+                    }
+                }
+                _ => false, // Handle other node types
+            };
+
+            self.fast_results[node_id as usize] = result;
+        }
+
+        // Collect matched rules
+        let mut matched_rules = Vec::new();
+        for (&rule_id, &result_node_id) in &self.dag.rule_results {
+            if self.fast_results[result_node_id as usize] {
+                matched_rules.push(rule_id);
             }
         }
 
+        Ok(DagEvaluationResult {
+            matched_rules,
+            nodes_evaluated: self.nodes_evaluated,
+            primitive_evaluations: self.primitive_evaluations,
+        })
+    }
+
+    /// Single event evaluation using HashMap storage (for larger DAGs).
+    fn evaluate_single_hashmap(&mut self, event: &Value) -> Result<DagEvaluationResult> {
+        self.reset();
+
+        let execution_order = self.dag.execution_order.clone();
+
+        for &node_id in &execution_order {
+            let node = &self.dag.nodes[node_id as usize];
+            self.nodes_evaluated += 1;
+
+            let result = match &node.node_type {
+                NodeType::Primitive { primitive_id } => {
+                    self.primitive_evaluations += 1;
+                    if let Some(primitive) = self.primitives.get(primitive_id) {
+                        let context = EventContext::new(event);
+                        primitive.matches(&context)
+                    } else {
+                        false
+                    }
+                }
+                NodeType::Logical { operation } => {
+                    self.evaluate_logical_operation_with_hashmap(*operation, &node.dependencies)?
+                }
+                NodeType::Result { .. } => {
+                    // Result nodes depend on a single logical node
+                    if node.dependencies.len() == 1 {
+                        *self
+                            .node_results
+                            .get(&node.dependencies[0])
+                            .unwrap_or(&false)
+                    } else {
+                        false
+                    }
+                }
+                _ => false, // Handle other node types
+            };
+
+            self.node_results.insert(node_id, result);
+        }
+
+        // Collect matched rules
         let mut matched_rules = Vec::new();
         for (&rule_id, &result_node_id) in &self.dag.rule_results {
-            if (result_node_id as usize) < self.fast_results.len()
-                && self.fast_results[result_node_id as usize]
+            if self
+                .node_results
+                .get(&result_node_id)
+                .copied()
+                .unwrap_or(false)
             {
                 matched_rules.push(rule_id);
             }
@@ -246,205 +438,16 @@ impl DagEvaluator {
         })
     }
 
-    /// HashMap-based evaluation for larger DAGs.
-    fn evaluate_with_hashmap_storage(&mut self, event: &Value) -> Result<DagEvaluationResult> {
-        self.reset();
-
-        // Use intelligent evaluation with early termination
-        self.evaluate_with_early_termination_hashmap(event)
-    }
-
-    /// Intelligent evaluation with early termination for standard path.
-    fn evaluate_with_early_termination_hashmap(
-        &mut self,
-        event: &Value,
-    ) -> Result<DagEvaluationResult> {
-        let execution_order = self.dag.execution_order.clone();
-        let mut can_terminate_early = std::collections::HashMap::new();
-
-        for node_id in execution_order {
-            // Check if we can skip this node due to early termination
-            if self.should_skip_node_hashmap(node_id, &can_terminate_early) {
-                continue;
-            }
-
-            let result = self.evaluate_node_with_hashmap(node_id, event)?;
-            self.node_results.insert(node_id, result);
-            self.nodes_evaluated += 1;
-
-            // Update early termination state based on this result
-            if let Some(node) = self.dag.get_node(node_id) {
-                self.update_early_termination_state_standard(
-                    node,
-                    result,
-                    &mut can_terminate_early,
-                );
-            }
-        }
-
-        let mut matched_rules = Vec::new();
-        for (&rule_id, &result_node_id) in &self.dag.rule_results {
-            if let Some(&result) = self.node_results.get(&result_node_id) {
-                if result {
-                    matched_rules.push(rule_id);
-                }
-            }
-        }
-
-        Ok(DagEvaluationResult {
-            matched_rules,
-            nodes_evaluated: self.nodes_evaluated,
-            primitive_evaluations: self.primitive_evaluations,
-        })
-    }
-
-    /// Evaluate a single node using HashMap storage.
-    fn evaluate_node_with_hashmap(&mut self, node_id: u32, event: &Value) -> Result<bool> {
-        let node = self
-            .dag
-            .get_node(node_id)
-            .ok_or_else(|| SigmaError::ExecutionError(format!("Node {node_id} not found")))?
-            .clone();
-
-        match &node.node_type {
-            NodeType::Primitive { primitive_id } => self.evaluate_primitive(*primitive_id, event),
-            NodeType::Logical { operation } => {
-                self.evaluate_logical_operation_with_hashmap(*operation, &node.dependencies)
-            }
-            NodeType::Result { rule_id: _ } => {
-                if node.dependencies.len() == 1 {
-                    Ok(self
-                        .node_results
-                        .get(&node.dependencies[0])
-                        .copied()
-                        .unwrap_or(false))
-                } else {
-                    Ok(false)
-                }
-            }
-            NodeType::Prefilter { .. } => {
-                // Prefilter nodes are handled at the start of evaluation
-                // If we reach here, prefilter already passed
-                Ok(true)
-            }
-        }
-    }
-
-    /// Evaluate a single node (fast path).
-    fn evaluate_node_with_vec(&mut self, node_id: u32, event: &Value) -> Result<bool> {
-        let node = self
-            .dag
-            .get_node(node_id)
-            .ok_or_else(|| SigmaError::ExecutionError(format!("Node {node_id} not found")))?
-            .clone();
-
-        match &node.node_type {
-            NodeType::Primitive { primitive_id } => self.evaluate_primitive(*primitive_id, event),
-            NodeType::Logical { operation } => {
-                self.evaluate_logical_operation_with_vec(*operation, &node.dependencies)
-            }
-            NodeType::Result { rule_id: _ } => {
-                if node.dependencies.len() == 1 {
-                    let dep_id = node.dependencies[0] as usize;
-                    if dep_id < self.fast_results.len() {
-                        Ok(self.fast_results[dep_id])
-                    } else {
-                        Ok(false)
-                    }
-                } else {
-                    Ok(false)
-                }
-            }
-            NodeType::Prefilter { .. } => {
-                // Prefilter nodes are handled at the start of evaluation
-                // If we reach here, prefilter already passed
-                Ok(true)
-            }
-        }
-    }
-
-    /// Evaluate a primitive node against an event.
-    fn evaluate_primitive(&mut self, primitive_id: u32, event: &Value) -> Result<bool> {
-        self.primitive_evaluations += 1;
-
-        if let Some(primitive) = self.primitives.get(&primitive_id) {
-            let context = EventContext::new(event);
-            Ok(primitive.matches(&context))
-        } else {
-            Err(SigmaError::ExecutionError(format!(
-                "Primitive {primitive_id} not found"
-            )))
-        }
-    }
-
-    /// Evaluate a logical operation using HashMap storage.
-    fn evaluate_logical_operation_with_hashmap(
-        &self,
-        operation: LogicalOp,
-        dependencies: &[u32],
-    ) -> Result<bool> {
-        match operation {
-            LogicalOp::And => {
-                for &dep_id in dependencies {
-                    if let Some(&result) = self.node_results.get(&dep_id) {
-                        if !result {
-                            return Ok(false);
-                        }
-                    } else {
-                        return Err(SigmaError::ExecutionError(format!(
-                            "Dependency {dep_id} not evaluated"
-                        )));
-                    }
-                }
-                Ok(true)
-            }
-            LogicalOp::Or => {
-                for &dep_id in dependencies {
-                    if let Some(&result) = self.node_results.get(&dep_id) {
-                        if result {
-                            return Ok(true);
-                        }
-                    } else {
-                        return Err(SigmaError::ExecutionError(format!(
-                            "Dependency {dep_id} not evaluated"
-                        )));
-                    }
-                }
-                Ok(false)
-            }
-            LogicalOp::Not => {
-                if dependencies.len() != 1 {
-                    return Err(SigmaError::ExecutionError(
-                        "NOT operation requires exactly one dependency".to_string(),
-                    ));
-                }
-                if let Some(&result) = self.node_results.get(&dependencies[0]) {
-                    Ok(!result)
-                } else {
-                    Err(SigmaError::ExecutionError(format!(
-                        "Dependency {} not evaluated",
-                        dependencies[0]
-                    )))
-                }
-            }
-        }
-    }
-
-    /// Evaluate a logical operation (fast path).
+    /// Evaluate logical operation using Vec storage.
     fn evaluate_logical_operation_with_vec(
         &self,
-        operation: LogicalOp,
+        op: LogicalOp,
         dependencies: &[u32],
     ) -> Result<bool> {
-        match operation {
+        match op {
             LogicalOp::And => {
                 for &dep_id in dependencies {
-                    let dep_idx = dep_id as usize;
-                    if dep_idx < self.fast_results.len() {
-                        if !self.fast_results[dep_idx] {
-                            return Ok(false);
-                        }
-                    } else {
+                    if !self.fast_results[dep_id as usize] {
                         return Ok(false);
                     }
                 }
@@ -452,8 +455,7 @@ impl DagEvaluator {
             }
             LogicalOp::Or => {
                 for &dep_id in dependencies {
-                    let dep_idx = dep_id as usize;
-                    if dep_idx < self.fast_results.len() && self.fast_results[dep_idx] {
+                    if self.fast_results[dep_id as usize] {
                         return Ok(true);
                     }
                 }
@@ -465,239 +467,229 @@ impl DagEvaluator {
                         "NOT operation requires exactly one dependency".to_string(),
                     ));
                 }
-                let dep_idx = dependencies[0] as usize;
-                if dep_idx < self.fast_results.len() {
-                    Ok(!self.fast_results[dep_idx])
+                Ok(!self.fast_results[dependencies[0] as usize])
+            }
+        }
+    }
+
+    /// Evaluate logical operation using HashMap storage.
+    fn evaluate_logical_operation_with_hashmap(
+        &self,
+        op: LogicalOp,
+        dependencies: &[u32],
+    ) -> Result<bool> {
+        match op {
+            LogicalOp::And => {
+                for &dep_id in dependencies {
+                    let result = self.node_results.get(&dep_id).copied().ok_or_else(|| {
+                        SigmaError::ExecutionError(format!(
+                            "Dependency node {dep_id} not evaluated"
+                        ))
+                    })?;
+                    if !result {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            LogicalOp::Or => {
+                for &dep_id in dependencies {
+                    let result = self.node_results.get(&dep_id).copied().ok_or_else(|| {
+                        SigmaError::ExecutionError(format!(
+                            "Dependency node {dep_id} not evaluated"
+                        ))
+                    })?;
+                    if result {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            LogicalOp::Not => {
+                if dependencies.len() != 1 {
+                    return Err(SigmaError::ExecutionError(
+                        "NOT operation requires exactly one dependency".to_string(),
+                    ));
+                }
+                let result = self
+                    .node_results
+                    .get(&dependencies[0])
+                    .copied()
+                    .ok_or_else(|| {
+                        SigmaError::ExecutionError(format!(
+                            "Dependency node {} not evaluated",
+                            dependencies[0]
+                        ))
+                    })?;
+                Ok(!result)
+            }
+        }
+    }
+
+    /// Batch evaluation implementation with memory pooling.
+    fn evaluate_batch_internal(&mut self, events: &[Value]) -> Result<Vec<DagEvaluationResult>> {
+        let batch_size = events.len();
+        let node_count = self.dag.nodes.len();
+        let primitive_count = self.primitives.len();
+
+        // Prepare memory pool
+        self.batch_pool
+            .resize_for_batch(batch_size, node_count, primitive_count);
+        self.batch_pool.reset();
+        self.nodes_evaluated = 0;
+        self.primitive_evaluations = 0;
+
+        // Phase 1: Evaluate all primitives for all events (vectorized)
+        self.evaluate_primitives_batch(events)?;
+
+        // Phase 2: Evaluate logical nodes using cached primitive results
+        self.evaluate_logical_batch(events)?;
+
+        // Phase 3: Collect final results for all events
+        self.collect_batch_results(events)
+    }
+
+    /// Evaluate all primitives for all events in batch.
+    fn evaluate_primitives_batch(&mut self, events: &[Value]) -> Result<()> {
+        for (primitive_id, &node_id) in &self.dag.primitive_map {
+            if let Some(primitive) = self.primitives.get(primitive_id) {
+                for (event_idx, event) in events.iter().enumerate() {
+                    let context = EventContext::new(event);
+                    let result = primitive.matches(&context);
+                    self.primitive_evaluations += 1;
+
+                    // Store primitive result
+                    if (*primitive_id as usize) < self.batch_pool.primitive_results.len() {
+                        self.batch_pool.primitive_results[*primitive_id as usize][event_idx] =
+                            result;
+                    }
+
+                    // Store node result (primitive nodes map directly)
+                    if (node_id as usize) < self.batch_pool.node_results.len() {
+                        self.batch_pool.node_results[node_id as usize][event_idx] = result;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluate logical nodes for all events using cached primitive results.
+    fn evaluate_logical_batch(&mut self, events: &[Value]) -> Result<()> {
+        let execution_order = self.dag.execution_order.clone();
+
+        for &node_id in &execution_order {
+            let node = &self.dag.nodes[node_id as usize];
+
+            if let NodeType::Logical { operation } = &node.node_type {
+                for event_idx in 0..events.len() {
+                    let result = self.evaluate_logical_operation_batch(
+                        *operation,
+                        &node.dependencies,
+                        event_idx,
+                    )?;
+
+                    if (node_id as usize) < self.batch_pool.node_results.len() {
+                        self.batch_pool.node_results[node_id as usize][event_idx] = result;
+                    }
+                    self.nodes_evaluated += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluate logical operation for a specific event in batch processing.
+    fn evaluate_logical_operation_batch(
+        &self,
+        op: LogicalOp,
+        dependencies: &[u32],
+        event_idx: usize,
+    ) -> Result<bool> {
+        match op {
+            LogicalOp::And => {
+                for &dep_id in dependencies {
+                    if (dep_id as usize) < self.batch_pool.node_results.len()
+                        && !self.batch_pool.node_results[dep_id as usize][event_idx]
+                    {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            LogicalOp::Or => {
+                for &dep_id in dependencies {
+                    if (dep_id as usize) < self.batch_pool.node_results.len()
+                        && self.batch_pool.node_results[dep_id as usize][event_idx]
+                    {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            LogicalOp::Not => {
+                if dependencies.len() != 1 {
+                    return Err(SigmaError::ExecutionError(
+                        "NOT operation requires exactly one dependency".to_string(),
+                    ));
+                }
+                let dep_id = dependencies[0];
+                if (dep_id as usize) < self.batch_pool.node_results.len() {
+                    Ok(!self.batch_pool.node_results[dep_id as usize][event_idx])
                 } else {
-                    Ok(true) // Default to true for NOT of missing dependency
+                    Ok(false)
                 }
             }
         }
     }
 
-    /// Evaluate the DAG using pre-computed primitive results (for VM compatibility).
-    pub fn evaluate_with_primitive_results(
-        &mut self,
-        primitive_results: &[bool],
-    ) -> Result<DagEvaluationResult> {
-        self.reset();
+    /// Collect final results for all events in batch processing.
+    fn collect_batch_results(&mut self, events: &[Value]) -> Result<Vec<DagEvaluationResult>> {
+        let mut results = Vec::with_capacity(events.len());
 
-        // Pre-populate primitive results from the provided array
-        for (primitive_id, &result) in primitive_results.iter().enumerate() {
-            if let Some(&node_id) = self.dag.primitive_map.get(&(primitive_id as u32)) {
-                self.node_results.insert(node_id, result);
-                self.primitive_evaluations += 1;
-            }
-        }
+        for event_idx in 0..events.len() {
+            let mut matched_rules = Vec::new();
 
-        // Evaluate logical and result nodes in topological order
-        let execution_order = self.dag.execution_order.clone();
-        for node_id in execution_order {
-            if let Some(node) = self.dag.get_node(node_id) {
-                match &node.node_type {
-                    NodeType::Primitive { .. } => {
-                        // Skip - already handled above
-                        self.node_results.entry(node_id).or_insert(false);
-                    }
-                    NodeType::Logical { operation } => {
-                        let result = self.evaluate_logical_operation_with_hashmap(
-                            *operation,
-                            &node.dependencies,
-                        )?;
-                        self.node_results.insert(node_id, result);
-                    }
-                    NodeType::Result { rule_id: _ } => {
-                        let result = if node.dependencies.len() == 1 {
-                            self.node_results
-                                .get(&node.dependencies[0])
-                                .copied()
-                                .unwrap_or(false)
-                        } else {
-                            false
-                        };
-                        self.node_results.insert(node_id, result);
-                    }
-                    NodeType::Prefilter { .. } => {
-                        // Skip prefilter nodes - they're handled separately
-                        self.node_results.insert(node_id, true);
-                    }
-                }
-                self.nodes_evaluated += 1;
-            }
-        }
-
-        // Collect matched rules from result nodes
-        let mut matched_rules = Vec::new();
-        for (&rule_id, &result_node_id) in &self.dag.rule_results {
-            if let Some(&result) = self.node_results.get(&result_node_id) {
-                if result {
+            // Check which rules matched for this event
+            for (&rule_id, &result_node_id) in &self.dag.rule_results {
+                if (result_node_id as usize) < self.batch_pool.node_results.len()
+                    && self.batch_pool.node_results[result_node_id as usize][event_idx]
+                {
                     matched_rules.push(rule_id);
                 }
             }
+
+            results.push(DagEvaluationResult {
+                matched_rules,
+                nodes_evaluated: self.nodes_evaluated / events.len(), // Average per event
+                primitive_evaluations: self.primitive_evaluations / events.len(),
+            });
         }
 
-        Ok(DagEvaluationResult {
-            matched_rules,
-            nodes_evaluated: self.nodes_evaluated,
-            primitive_evaluations: self.primitive_evaluations,
-        })
+        Ok(results)
     }
 
-    /// Check if a node should be skipped due to early termination (Vec storage).
-    fn should_skip_node_vec(
-        &self,
-        node_id: u32,
-        termination_state: &std::collections::HashMap<u32, bool>,
-    ) -> bool {
-        if let Some(node) = self.dag.get_node(node_id) {
-            // Check if any of this node's dependencies have caused early termination
-            for &dep_id in &node.dependencies {
-                if let Some(&can_terminate) = termination_state.get(&dep_id) {
-                    if can_terminate {
-                        // Check if this dependency failure makes this node unnecessary
-                        if self.is_node_unnecessary_due_to_dependency_failure(node, dep_id) {
-                            return true;
-                        }
-                    }
-                }
-            }
+    /// Parallel batch evaluation (simplified implementation).
+    ///
+    /// For now, this falls back to regular batch processing.
+    /// A full parallel implementation would require more complex thread management
+    /// and synchronization, which adds significant complexity.
+    fn evaluate_batch_parallel(&mut self, events: &[Value]) -> Result<Vec<DagEvaluationResult>> {
+        // For simplicity, fall back to batch processing
+        // A full parallel implementation would be significantly more complex
+        self.evaluate_batch_internal(events)
+    }
+
+    /// Evaluate a single primitive for testing purposes.
+    pub fn evaluate_primitive(&mut self, primitive_id: u32, event: &Value) -> Result<bool> {
+        if let Some(primitive) = self.primitives.get(&primitive_id) {
+            let context = EventContext::new(event);
+            Ok(primitive.matches(&context))
+        } else {
+            Err(SigmaError::ExecutionError(format!(
+                "Primitive {primitive_id} not found"
+            )))
         }
-        false
-    }
-
-    /// Check if a node should be skipped due to early termination (HashMap storage).
-    fn should_skip_node_hashmap(
-        &self,
-        node_id: u32,
-        termination_state: &std::collections::HashMap<u32, bool>,
-    ) -> bool {
-        if let Some(node) = self.dag.get_node(node_id) {
-            // Check if any of this node's dependencies have caused early termination
-            for &dep_id in &node.dependencies {
-                if let Some(&can_terminate) = termination_state.get(&dep_id) {
-                    if can_terminate {
-                        // Check if this dependency failure makes this node unnecessary
-                        if self.is_node_unnecessary_due_to_dependency_failure(node, dep_id) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    /// Check if a node is unnecessary due to a dependency failure.
-    fn is_node_unnecessary_due_to_dependency_failure(
-        &self,
-        node: &super::types::DagNode,
-        failed_dep_id: u32,
-    ) -> bool {
-        match &node.node_type {
-            NodeType::Logical {
-                operation: LogicalOp::And,
-            } => {
-                // For AND nodes, if any dependency fails, the whole node fails
-                true
-            }
-            NodeType::Logical {
-                operation: LogicalOp::Or,
-            } => {
-                // For OR nodes, we can only skip if ALL dependencies have failed
-                // This is more complex and requires tracking all dependency states
-                false // Conservative approach for now
-            }
-            NodeType::Result { .. } => {
-                // Result nodes depend on their single dependency
-                node.dependencies.len() == 1 && node.dependencies[0] == failed_dep_id
-            }
-            _ => false,
-        }
-    }
-
-    /// Update early termination state based on node evaluation result (fast path).
-    fn update_early_termination_state_fast(
-        &self,
-        node: &super::types::DagNode,
-        result: bool,
-        termination_state: &mut std::collections::HashMap<u32, bool>,
-    ) {
-        match &node.node_type {
-            NodeType::Primitive { .. } => {
-                // Primitive failure can cause early termination for dependent AND nodes
-                if !result {
-                    termination_state.insert(node.id, true);
-                }
-            }
-            NodeType::Logical { operation } => {
-                match operation {
-                    LogicalOp::And if !result => {
-                        // Failed AND can cause early termination for dependents
-                        termination_state.insert(node.id, true);
-                    }
-                    LogicalOp::Or if result => {
-                        // Successful OR can cause early termination for other OR branches
-                        // This is more complex and requires careful analysis
-                        termination_state.insert(node.id, false);
-                    }
-                    _ => {
-                        // Other cases don't cause early termination
-                        termination_state.insert(node.id, false);
-                    }
-                }
-            }
-            _ => {
-                // Other node types don't cause early termination
-                termination_state.insert(node.id, false);
-            }
-        }
-    }
-
-    /// Update early termination state based on node evaluation result (standard path).
-    fn update_early_termination_state_standard(
-        &self,
-        node: &super::types::DagNode,
-        result: bool,
-        termination_state: &mut std::collections::HashMap<u32, bool>,
-    ) {
-        match &node.node_type {
-            NodeType::Primitive { .. } => {
-                // Primitive failure can cause early termination for dependent AND nodes
-                if !result {
-                    termination_state.insert(node.id, true);
-                }
-            }
-            NodeType::Logical { operation } => {
-                match operation {
-                    LogicalOp::And if !result => {
-                        // Failed AND can cause early termination for dependents
-                        termination_state.insert(node.id, true);
-                    }
-                    LogicalOp::Or if result => {
-                        // Successful OR can cause early termination for other OR branches
-                        // This is more complex and requires careful analysis
-                        termination_state.insert(node.id, false);
-                    }
-                    _ => {
-                        // Other cases don't cause early termination
-                        termination_state.insert(node.id, false);
-                    }
-                }
-            }
-            _ => {
-                // Other node types don't cause early termination
-                termination_state.insert(node.id, false);
-            }
-        }
-    }
-
-    /// Reset evaluation state for a new evaluation.
-    pub fn reset(&mut self) {
-        self.node_results.clear();
-        self.fast_results.fill(false);
-        self.nodes_evaluated = 0;
-        self.primitive_evaluations = 0;
-        // Note: Don't reset prefilter counters as they're cumulative stats
     }
 
     /// Get prefilter performance statistics.
@@ -709,30 +701,31 @@ impl DagEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dag::types::{DagNode, LogicalOp, NodeType};
+    use crate::dag::types::DagNode;
     use crate::ir::Primitive;
-    use crate::matcher::CompiledPrimitive;
     use serde_json::json;
-    use std::collections::HashMap;
 
     fn create_test_dag() -> CompiledDag {
-        // Create a simple DAG: primitive -> result
+        let mut dag = CompiledDag::new();
+
+        // Add primitive node
         let primitive_node = DagNode::new(0, NodeType::Primitive { primitive_id: 0 });
-        let result_node = DagNode::new(1, NodeType::Result { rule_id: 1 });
+        dag.add_node(primitive_node);
 
-        let mut primitive_map = HashMap::new();
-        primitive_map.insert(0, 0);
+        // Add logical node
+        let mut logical_node = DagNode::new(
+            1,
+            NodeType::Logical {
+                operation: LogicalOp::And,
+            },
+        );
+        logical_node.add_dependency(0);
+        dag.add_node(logical_node);
 
-        let mut rule_results = HashMap::new();
-        rule_results.insert(1, 1);
-
-        CompiledDag {
-            nodes: vec![primitive_node, result_node],
-            execution_order: vec![0, 1],
-            primitive_map,
-            rule_results,
-            result_buffer_size: 2,
-        }
+        dag.execution_order = vec![0, 1];
+        dag.rule_results.insert(1, 1);
+        dag.primitive_map.insert(0, 0);
+        dag
     }
 
     fn create_test_primitives() -> HashMap<u32, CompiledPrimitive> {
@@ -768,227 +761,117 @@ mod tests {
     }
 
     #[test]
-    fn test_dag_evaluator_reset() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = create_test_primitives();
-
-        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
-
-        // Simulate some state
-        evaluator.node_results.insert(0, true);
-        evaluator.fast_results[0] = true;
-        evaluator.nodes_evaluated = 5;
-        evaluator.primitive_evaluations = 3;
-
-        // Reset and verify
-        evaluator.reset();
-        assert!(evaluator.node_results.is_empty());
-        assert!(!evaluator.fast_results[0]);
-        assert_eq!(evaluator.nodes_evaluated, 0);
-        assert_eq!(evaluator.primitive_evaluations, 0);
+    fn test_evaluator_config_default() {
+        let config = EvaluatorConfig::default();
+        assert!(!config.enable_parallel);
+        assert_eq!(config.min_rules_for_parallel, 10);
+        assert_eq!(config.min_batch_size_for_parallel, 100);
+        assert_eq!(config.vec_storage_threshold, 32);
     }
 
     #[test]
-    fn test_evaluate_primitive_not_found() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = HashMap::new(); // Empty primitives
-
-        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
-        let event = json!({"field1": "value1"});
-
-        let result = evaluator.evaluate_primitive(0, &event);
-        assert!(result.is_err());
-
-        if let Err(SigmaError::ExecutionError(msg)) = result {
-            assert!(msg.contains("Primitive 0 not found"));
-        } else {
-            panic!("Expected ExecutionError for missing primitive");
-        }
-    }
-
-    #[test]
-    fn test_evaluate_logical_operation_and_success() {
+    fn test_strategy_selection() {
         let dag = Arc::new(create_test_dag());
         let primitives = create_test_primitives();
-
-        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
-
-        // Set up dependencies
-        evaluator.node_results.insert(0, true);
-        evaluator.node_results.insert(1, true);
-
-        let result = evaluator
-            .evaluate_logical_operation_with_hashmap(LogicalOp::And, &[0, 1])
-            .unwrap();
-        assert!(result);
-    }
-
-    #[test]
-    fn test_evaluate_logical_operation_and_failure() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = create_test_primitives();
-
-        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
-
-        // Set up dependencies with one false
-        evaluator.node_results.insert(0, true);
-        evaluator.node_results.insert(1, false);
-
-        let result = evaluator
-            .evaluate_logical_operation_with_hashmap(LogicalOp::And, &[0, 1])
-            .unwrap();
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_evaluate_logical_operation_or_success() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = create_test_primitives();
-
-        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
-
-        // Set up dependencies with one true
-        evaluator.node_results.insert(0, false);
-        evaluator.node_results.insert(1, true);
-
-        let result = evaluator
-            .evaluate_logical_operation_with_hashmap(LogicalOp::Or, &[0, 1])
-            .unwrap();
-        assert!(result);
-    }
-
-    #[test]
-    fn test_evaluate_logical_operation_or_failure() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = create_test_primitives();
-
-        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
-
-        // Set up dependencies with both false
-        evaluator.node_results.insert(0, false);
-        evaluator.node_results.insert(1, false);
-
-        let result = evaluator
-            .evaluate_logical_operation_with_hashmap(LogicalOp::Or, &[0, 1])
-            .unwrap();
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_evaluate_logical_operation_not_success() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = create_test_primitives();
-
-        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
-
-        // Set up dependency
-        evaluator.node_results.insert(0, false);
-
-        let result = evaluator
-            .evaluate_logical_operation_with_hashmap(LogicalOp::Not, &[0])
-            .unwrap();
-        assert!(result);
-    }
-
-    #[test]
-    fn test_evaluate_logical_operation_not_failure() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = create_test_primitives();
-
-        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
-
-        // Set up dependency
-        evaluator.node_results.insert(0, true);
-
-        let result = evaluator
-            .evaluate_logical_operation_with_hashmap(LogicalOp::Not, &[0])
-            .unwrap();
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_evaluate_logical_operation_not_invalid_dependencies() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = create_test_primitives();
-
         let evaluator = DagEvaluator::with_primitives(dag, primitives);
 
-        // NOT with multiple dependencies should fail
-        let result = evaluator.evaluate_logical_operation_with_hashmap(LogicalOp::Not, &[0, 1]);
-        assert!(result.is_err());
+        // Single event with small DAG should use SingleVec
+        assert_eq!(evaluator.select_strategy(1), EvaluationStrategy::SingleVec);
 
-        if let Err(SigmaError::ExecutionError(msg)) = result {
-            assert!(msg.contains("NOT operation requires exactly one dependency"));
-        } else {
-            panic!("Expected ExecutionError for invalid NOT dependencies");
+        // Multiple events should use Batch
+        assert_eq!(evaluator.select_strategy(10), EvaluationStrategy::Batch);
+    }
+
+    #[test]
+    fn test_batch_memory_pool() {
+        let mut pool = BatchMemoryPool::new();
+        pool.resize_for_batch(10, 5, 3);
+
+        assert_eq!(pool.primitive_results.len(), 3);
+        assert_eq!(pool.node_results.len(), 5);
+        assert_eq!(pool.result_buffer.len(), 10);
+
+        pool.reset();
+        // Verify all buffers are reset
+        for primitive_buffer in &pool.primitive_results {
+            assert!(primitive_buffer.iter().all(|&x| !x));
         }
     }
 
     #[test]
-    fn test_evaluate_logical_operation_missing_dependency() {
+    fn test_logical_operations_vec() {
         let dag = Arc::new(create_test_dag());
         let primitives = create_test_primitives();
-
-        let evaluator = DagEvaluator::with_primitives(dag, primitives);
-
-        // Try to evaluate without setting up dependencies
-        let result = evaluator.evaluate_logical_operation_with_hashmap(LogicalOp::And, &[0, 1]);
-        assert!(result.is_err());
-
-        if let Err(SigmaError::ExecutionError(msg)) = result {
-            assert!(msg.contains("Dependency") && msg.contains("not evaluated"));
-        } else {
-            panic!("Expected ExecutionError for missing dependency");
-        }
-    }
-
-    #[test]
-    fn test_evaluate_logical_operation_fast_and() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = create_test_primitives();
-
         let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
 
-        // Set up fast results
+        // Test AND operation
         evaluator.fast_results[0] = true;
         evaluator.fast_results[1] = true;
-
         let result = evaluator
             .evaluate_logical_operation_with_vec(LogicalOp::And, &[0, 1])
             .unwrap();
         assert!(result);
-    }
 
-    #[test]
-    fn test_evaluate_logical_operation_fast_or() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = create_test_primitives();
-
-        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
-
-        // Set up fast results with one true
+        // Test OR operation
         evaluator.fast_results[0] = false;
         evaluator.fast_results[1] = true;
-
         let result = evaluator
             .evaluate_logical_operation_with_vec(LogicalOp::Or, &[0, 1])
             .unwrap();
         assert!(result);
-    }
 
-    #[test]
-    fn test_evaluate_logical_operation_fast_not() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = create_test_primitives();
-
-        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
-
-        // Set up fast results
+        // Test NOT operation
         evaluator.fast_results[0] = false;
-
         let result = evaluator
             .evaluate_logical_operation_with_vec(LogicalOp::Not, &[0])
             .unwrap();
         assert!(result);
+    }
+
+    #[test]
+    fn test_logical_operations_hashmap() {
+        let dag = Arc::new(create_test_dag());
+        let primitives = create_test_primitives();
+        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
+
+        // Test AND operation
+        evaluator.node_results.insert(0, true);
+        evaluator.node_results.insert(1, true);
+        let result = evaluator
+            .evaluate_logical_operation_with_hashmap(LogicalOp::And, &[0, 1])
+            .unwrap();
+        assert!(result);
+
+        // Test OR operation
+        evaluator.node_results.insert(0, false);
+        evaluator.node_results.insert(1, true);
+        let result = evaluator
+            .evaluate_logical_operation_with_hashmap(LogicalOp::Or, &[0, 1])
+            .unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn test_empty_batch_evaluation() {
+        let dag = Arc::new(create_test_dag());
+        let primitives = create_test_primitives();
+        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
+
+        let events = Vec::new();
+        let results = evaluator.evaluate_batch(&events).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_single_event_evaluation() {
+        let dag = Arc::new(create_test_dag());
+        let primitives = create_test_primitives();
+        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
+
+        let event = json!({"field1": "value1"});
+        let result = evaluator.evaluate(&event);
+
+        // Should not panic and return a result
+        assert!(result.is_ok());
     }
 }

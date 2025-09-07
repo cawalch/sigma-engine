@@ -1,9 +1,7 @@
 //! Primary DAG execution engine.
 
-use super::batch_evaluator::BatchDagEvaluator;
 use super::builder::DagBuilder;
-use super::evaluator::{DagEvaluationResult, DagEvaluator};
-use super::parallel_evaluator::{ParallelConfig, ParallelDagEvaluator};
+use super::evaluator::{DagEvaluationResult, DagEvaluator, EvaluatorConfig};
 use super::prefilter::LiteralPrefilter;
 use super::types::{CompiledDag, DagStatistics};
 use crate::error::Result;
@@ -12,6 +10,30 @@ use crate::matcher::CompiledPrimitive;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Configuration for parallel processing in the DAG engine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParallelConfig {
+    /// Number of threads to use for parallel processing.
+    pub num_threads: usize,
+    /// Minimum number of rules per thread for parallel processing.
+    pub min_rules_per_thread: usize,
+    /// Enable parallel processing of events within batches.
+    pub enable_event_parallelism: bool,
+    /// Minimum batch size to enable parallel processing.
+    pub min_batch_size_for_parallelism: usize,
+}
+
+impl Default for ParallelConfig {
+    fn default() -> Self {
+        Self {
+            num_threads: num_cpus::get(),
+            min_rules_per_thread: 10,
+            enable_event_parallelism: true,
+            min_batch_size_for_parallelism: 100,
+        }
+    }
+}
 
 /// Configuration for DAG engine behavior and optimization.
 ///
@@ -219,6 +241,8 @@ impl DagEngineConfig {
 ///
 /// This engine provides high-performance rule evaluation using a DAG-based
 /// approach that enables shared computation across rules with common primitives.
+/// The engine uses a unified evaluator that automatically selects the optimal
+/// evaluation strategy based on input characteristics.
 pub struct DagEngine {
     /// Compiled DAG structure
     dag: Arc<CompiledDag>,
@@ -226,12 +250,8 @@ pub struct DagEngine {
     primitives: HashMap<u32, CompiledPrimitive>,
     /// Engine configuration
     config: DagEngineConfig,
-    /// Cached evaluator for reuse
+    /// Unified evaluator that adapts strategy based on input
     evaluator: Option<DagEvaluator>,
-    /// Cached batch evaluator for high-performance batch processing
-    batch_evaluator: Option<BatchDagEvaluator>,
-    /// Cached parallel evaluator for multi-threaded processing
-    parallel_evaluator: Option<ParallelDagEvaluator>,
     /// Optional prefilter for literal pattern matching
     prefilter: Option<Arc<LiteralPrefilter>>,
 }
@@ -398,8 +418,6 @@ impl DagEngine {
             primitives,
             config,
             evaluator: None,
-            batch_evaluator: None,
-            parallel_evaluator: None,
             prefilter,
         })
     }
@@ -448,8 +466,6 @@ impl DagEngine {
             primitives,
             config,
             evaluator: None,
-            batch_evaluator: None,
-            parallel_evaluator: None,
             prefilter,
         })
     }
@@ -496,8 +512,6 @@ impl DagEngine {
             primitives,
             config,
             evaluator: None,
-            batch_evaluator: None,
-            parallel_evaluator: None,
             prefilter,
         })
     }
@@ -510,11 +524,23 @@ impl DagEngine {
                 eval.reset();
                 eval
             }
-            None => DagEvaluator::with_primitives_and_prefilter(
-                self.dag.clone(),
-                self.primitives.clone(),
-                self.prefilter.clone(),
-            ),
+            None => {
+                // Create evaluator config from engine config
+                let evaluator_config = EvaluatorConfig {
+                    enable_parallel: self.config.enable_parallel_processing,
+                    min_rules_for_parallel: self.config.parallel_config.min_rules_per_thread * 2,
+                    min_batch_size_for_parallel: 100, // Reasonable default
+                    vec_storage_threshold: 32,        // Reasonable default
+                    num_threads: self.config.parallel_config.num_threads,
+                };
+
+                DagEvaluator::with_primitives_and_config(
+                    self.dag.clone(),
+                    self.primitives.clone(),
+                    self.prefilter.clone(),
+                    evaluator_config,
+                )
+            }
         };
 
         // Perform evaluation
@@ -583,42 +609,12 @@ impl DagEngine {
         Ok(result)
     }
 
-    /// Evaluate the DAG using pre-computed primitive results (for VM compatibility).
-    pub fn evaluate_with_primitive_results(
-        &mut self,
-        primitive_results: &[bool],
-    ) -> Result<DagEvaluationResult> {
-        // Get or create evaluator
-        let mut evaluator = match self.evaluator.take() {
-            Some(mut eval) => {
-                eval.reset();
-                eval
-            }
-            None => DagEvaluator::with_primitives_and_prefilter(
-                self.dag.clone(),
-                self.primitives.clone(),
-                self.prefilter.clone(),
-            ),
-        };
-
-        // Perform evaluation with primitive results
-        let result = evaluator.evaluate_with_primitive_results(primitive_results)?;
-
-        // Store evaluator for reuse
-        self.evaluator = Some(evaluator);
-
-        Ok(result)
-    }
-
     /// Evaluate the DAG against multiple events using high-performance batch processing.
     ///
-    /// This method implements true batch processing with shared computation:
-    /// 1. All primitives are evaluated for all events first (vectorized)
-    /// 2. Logical nodes are processed using cached primitive results
-    /// 3. Final results are collected efficiently
-    ///
-    /// This approach achieves 10x+ performance improvement over single-event processing
-    /// by maximizing shared computation and minimizing memory allocations.
+    /// The unified evaluator automatically selects the optimal strategy:
+    /// - Batch processing for multiple events
+    /// - Parallel processing for large rule sets (when enabled)
+    /// - Single event processing for small batches
     ///
     /// # Arguments
     /// * `events` - Slice of events to evaluate
@@ -630,103 +626,36 @@ impl DagEngine {
             return Ok(Vec::new());
         }
 
-        // Get or create batch evaluator
-        let mut batch_evaluator = match self.batch_evaluator.take() {
+        // Get or create evaluator
+        let mut evaluator = match self.evaluator.take() {
             Some(mut eval) => {
                 eval.reset();
                 eval
             }
-            None => BatchDagEvaluator::new(self.dag.clone(), self.primitives.clone()),
+            None => {
+                // Create evaluator config from engine config
+                let evaluator_config = EvaluatorConfig {
+                    enable_parallel: self.config.enable_parallel_processing,
+                    min_rules_for_parallel: self.config.parallel_config.min_rules_per_thread * 2,
+                    min_batch_size_for_parallel: 100, // Reasonable default
+                    vec_storage_threshold: 32,        // Reasonable default
+                    num_threads: self.config.parallel_config.num_threads,
+                };
+
+                DagEvaluator::with_primitives_and_config(
+                    self.dag.clone(),
+                    self.primitives.clone(),
+                    self.prefilter.clone(),
+                    evaluator_config,
+                )
+            }
         };
 
         // Perform batch evaluation
-        let results = batch_evaluator.evaluate_batch(events)?;
+        let results = evaluator.evaluate_batch(events)?;
 
-        // Store batch evaluator for reuse
-        self.batch_evaluator = Some(batch_evaluator);
-
-        Ok(results)
-    }
-
-    /// Evaluate the DAG against an event using parallel processing.
-    ///
-    /// This method uses parallel rule evaluation to achieve linear scaling with core count.
-    /// It automatically falls back to single-threaded evaluation if parallel processing
-    /// is disabled or if the rule set is too small to benefit from parallelization.
-    ///
-    /// # Arguments
-    /// * `event` - The event to evaluate
-    ///
-    /// # Returns
-    /// A `DagEvaluationResult` containing matched rules and performance metrics.
-    pub fn evaluate_parallel(&mut self, event: &Value) -> Result<DagEvaluationResult> {
-        if !self.config.enable_parallel_processing {
-            return self.evaluate(event);
-        }
-
-        // Get or create parallel evaluator
-        let mut parallel_evaluator = match self.parallel_evaluator.take() {
-            Some(mut eval) => {
-                eval.reset();
-                eval
-            }
-            None => ParallelDagEvaluator::new(
-                self.dag.clone(),
-                self.primitives.clone(),
-                self.config.parallel_config.clone(),
-            ),
-        };
-
-        // Perform parallel evaluation
-        let result = parallel_evaluator.evaluate(event)?;
-
-        // Store parallel evaluator for reuse
-        self.parallel_evaluator = Some(parallel_evaluator);
-
-        Ok(result)
-    }
-
-    /// Evaluate multiple events using parallel batch processing.
-    ///
-    /// This method combines batch processing with parallel evaluation to achieve
-    /// maximum throughput on multi-core systems. It processes events in parallel
-    /// while maintaining the benefits of shared primitive computation.
-    ///
-    /// # Arguments
-    /// * `events` - Slice of events to evaluate
-    ///
-    /// # Returns
-    /// A vector of `DagEvaluationResult` for each event.
-    pub fn evaluate_batch_parallel(
-        &mut self,
-        events: &[Value],
-    ) -> Result<Vec<DagEvaluationResult>> {
-        if !self.config.enable_parallel_processing {
-            return self.evaluate_batch(events);
-        }
-
-        if events.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Get or create parallel evaluator
-        let mut parallel_evaluator = match self.parallel_evaluator.take() {
-            Some(mut eval) => {
-                eval.reset();
-                eval
-            }
-            None => ParallelDagEvaluator::new(
-                self.dag.clone(),
-                self.primitives.clone(),
-                self.config.parallel_config.clone(),
-            ),
-        };
-
-        // Perform parallel batch evaluation
-        let results = parallel_evaluator.evaluate_batch(events)?;
-
-        // Store parallel evaluator for reuse
-        self.parallel_evaluator = Some(parallel_evaluator);
+        // Store evaluator for reuse
+        self.evaluator = Some(evaluator);
 
         Ok(results)
     }
@@ -1135,15 +1064,9 @@ detection:
                 // Test evaluation methods (may fail but interface should exist)
                 let event = serde_json::json!({"field1": "value1"});
                 let _result = engine.evaluate(&event);
-                let _result = engine.evaluate_parallel(&event);
 
                 let events = vec![event.clone(), event];
                 let _result = engine.evaluate_batch(&events);
-                let _result = engine.evaluate_batch_parallel(&events);
-
-                // Test primitive results evaluation
-                let primitive_results = vec![true, false];
-                let _result = engine.evaluate_with_primitive_results(&primitive_results);
             }
             Err(_) => {
                 // Expected to fail due to incomplete DAG builder implementation
@@ -1188,11 +1111,11 @@ detection:
             Ok(mut engine) => {
                 let event = serde_json::json!({"field1": "value1"});
 
-                // Should fall back to regular evaluation when parallel is disabled
-                let _result = engine.evaluate_parallel(&event);
+                // Test unified evaluation methods
+                let _result = engine.evaluate(&event);
 
                 let events = vec![event];
-                let _result = engine.evaluate_batch_parallel(&events);
+                let _result = engine.evaluate_batch(&events);
             }
             Err(_) => {
                 // Expected to fail due to incomplete implementation
