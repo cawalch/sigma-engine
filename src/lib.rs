@@ -85,7 +85,6 @@
 
 pub mod compiler;
 pub mod config;
-pub mod engine;
 pub mod error;
 pub mod ir;
 pub mod matcher;
@@ -99,8 +98,11 @@ pub mod streaming;
 #[cfg(feature = "profiling")]
 pub mod profiling;
 
-// Primary engine interface
-pub use engine::{EngineResult, SigmaEngine, SigmaEngineBuilder};
+// Primary engine interface - simplified to use DagEngine directly
+pub use dag::engine::{
+    DagEngine as SigmaEngine, DagEngineBuilder as SigmaEngineBuilder, DagEngineConfig,
+};
+pub use dag::evaluator::DagEvaluationResult as EngineResult;
 
 // Compiler and configuration
 pub use compiler::{Compiler, FieldMapping};
@@ -118,7 +120,7 @@ pub use matcher::{
 };
 
 // DAG execution engine (for advanced use cases)
-pub use dag::engine::{DagEngineBuilder, DagEngineConfig, DagExecutionResult};
+pub use dag::engine::DagExecutionResult;
 pub use dag::{
     CompiledDag, DagBuilder, DagEngine, DagEvaluationResult, DagEvaluator, DagNode, DagOptimizer,
     DagStatistics, LogicalOp, NodeId, NodeType, ParallelConfig,
