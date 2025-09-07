@@ -41,6 +41,7 @@ aho-corasick = "1.1"
 
 # Core dependencies for parallel processing
 rayon = "1.8"
+num_cpus = "1.16"
 
 # Optional dependencies
 simd-json = { version = "0.15", optional = true }

@@ -123,5 +123,5 @@ pub use matcher::{
 pub use dag::engine::DagExecutionResult;
 pub use dag::{
     CompiledDag, DagBuilder, DagEngine, DagEvaluationResult, DagEvaluator, DagNode, DagOptimizer,
-    DagStatistics, LogicalOp, NodeId, NodeType, ParallelConfig,
+    DagStatistics, EvaluationStrategy, EvaluatorConfig, LogicalOp, NodeId, NodeType,
 };
