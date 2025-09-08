@@ -92,9 +92,6 @@ pub mod matcher;
 // Primary DAG execution engine
 pub mod dag;
 
-// Streaming architecture for Kafka integration patterns
-pub mod streaming;
-
 #[cfg(feature = "profiling")]
 pub mod profiling;
 
