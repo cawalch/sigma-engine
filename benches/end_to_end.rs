@@ -6,7 +6,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use serde_json::json;
 use sigma_engine::matcher::EventContext;
-use sigma_engine::{Compiler, DagEngineConfig, SigmaEngine};
+use sigma_engine::{Compiler, EngineConfig, SigmaEngine};
 use std::hint::black_box;
 
 /// Benchmark single event evaluation through the complete pipeline
@@ -52,7 +52,7 @@ level: medium
     let mut compiler = Compiler::new();
     let ruleset = compiler.compile_ruleset(&[rule_yaml]).unwrap();
     let mut engine =
-        SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
+        SigmaEngine::from_ruleset_with_config(ruleset, EngineConfig::default()).unwrap();
 
     let test_event = json!({
         "EventID": "4104",
@@ -126,7 +126,7 @@ level: medium
     let mut compiler = Compiler::new();
     let ruleset = compiler.compile_ruleset(&rules).unwrap();
     let mut engine =
-        SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
+        SigmaEngine::from_ruleset_with_config(ruleset, EngineConfig::default()).unwrap();
 
     // Create test events manually
     let test_events: Vec<serde_json::Value> = (0..100)
@@ -252,7 +252,7 @@ detection:
         b.iter(|| {
             let engine = SigmaEngine::from_ruleset_with_config(
                 black_box(ruleset.clone()),
-                DagEngineConfig::default(),
+                EngineConfig::default(),
             );
             black_box(engine)
         })

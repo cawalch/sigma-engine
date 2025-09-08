@@ -1,6 +1,6 @@
 use serde_json::json;
-use sigma_engine::dag::engine::{DagEngine, DagEngineConfig};
 use sigma_engine::ir::{CompiledRuleset, Primitive};
+use sigma_engine::{EngineConfig, SigmaEngine};
 
 #[test]
 fn test_prefilter_integration() {
@@ -26,13 +26,10 @@ fn test_prefilter_integration() {
     };
 
     // Test with prefilter enabled
-    let config_with_prefilter = DagEngineConfig {
-        enable_prefilter: true,
-        ..Default::default()
-    };
+    let config_with_prefilter = EngineConfig::default().with_prefilter(true);
 
     let mut engine_with_prefilter =
-        DagEngine::from_ruleset_with_config(ruleset.clone(), config_with_prefilter)
+        SigmaEngine::from_ruleset_with_config(ruleset.clone(), config_with_prefilter)
             .expect("Failed to create engine with prefilter");
 
     // Test event that won't match (should benefit from prefilter)
@@ -73,23 +70,17 @@ fn test_prefilter_vs_no_prefilter() {
     };
 
     // Test with prefilter enabled
-    let config_with_prefilter = DagEngineConfig {
-        enable_prefilter: true,
-        ..Default::default()
-    };
+    let config_with_prefilter = EngineConfig::default().with_prefilter(true);
 
     // Test with prefilter disabled
-    let config_without_prefilter = DagEngineConfig {
-        enable_prefilter: false,
-        ..Default::default()
-    };
+    let config_without_prefilter = EngineConfig::default().with_prefilter(false);
 
     let mut engine_with_prefilter =
-        DagEngine::from_ruleset_with_config(ruleset.clone(), config_with_prefilter)
+        SigmaEngine::from_ruleset_with_config(ruleset.clone(), config_with_prefilter)
             .expect("Failed to create engine with prefilter");
 
     let mut engine_without_prefilter =
-        DagEngine::from_ruleset_with_config(ruleset, config_without_prefilter)
+        SigmaEngine::from_ruleset_with_config(ruleset, config_without_prefilter)
             .expect("Failed to create engine without prefilter");
 
     // Test event that won't match

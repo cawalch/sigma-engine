@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::{json, Value};
-use sigma_engine::dag::engine::{DagEngine, DagEngineConfig};
 use sigma_engine::ir::{CompiledRuleset, Primitive};
+use sigma_engine::{EngineConfig, SigmaEngine};
 use std::hint::black_box;
 use std::time::Duration;
 
@@ -446,22 +446,22 @@ fn benchmark_real_world_prefilter_effectiveness(c: &mut Criterion) {
     println!("  Regex patterns: {regex_count} (prefilter excluded)");
 
     // Create engines with and without prefilter
-    let config_with_prefilter = DagEngineConfig {
+    let config_with_prefilter = EngineConfig {
         enable_prefilter: true,
         ..Default::default()
     };
 
-    let config_without_prefilter = DagEngineConfig {
+    let config_without_prefilter = EngineConfig {
         enable_prefilter: false,
         ..Default::default()
     };
 
     let mut engine_with_prefilter =
-        DagEngine::from_ruleset_with_config(ruleset.clone(), config_with_prefilter)
+        SigmaEngine::from_ruleset_with_config(ruleset.clone(), config_with_prefilter)
             .expect("Failed to create engine with prefilter");
 
     let mut engine_without_prefilter =
-        DagEngine::from_ruleset_with_config(ruleset, config_without_prefilter)
+        SigmaEngine::from_ruleset_with_config(ruleset, config_without_prefilter)
             .expect("Failed to create engine without prefilter");
 
     // Print prefilter statistics
@@ -556,25 +556,21 @@ fn benchmark_soc_realistic_selectivity(c: &mut Criterion) {
     let ruleset = create_real_world_ruleset();
 
     // Create engines with and without prefilter
-    let config_with_prefilter = DagEngineConfig {
-        enable_prefilter: true,
-        enable_optimization: true,
-        optimization_level: 2,
-        ..Default::default()
-    };
+    let config_with_prefilter = EngineConfig::new()
+        .with_prefilter(true)
+        .with_dag_optimization(true)
+        .with_dag_optimization_level(2);
 
-    let config_without_prefilter = DagEngineConfig {
-        enable_prefilter: false,
-        enable_optimization: true,
-        optimization_level: 2,
-        ..Default::default()
-    };
+    let config_without_prefilter = EngineConfig::new()
+        .with_prefilter(false)
+        .with_dag_optimization(true)
+        .with_dag_optimization_level(2);
 
     let mut engine_with_prefilter =
-        DagEngine::from_ruleset_with_config(ruleset.clone(), config_with_prefilter)
+        SigmaEngine::from_ruleset_with_config(ruleset.clone(), config_with_prefilter)
             .expect("Failed to create engine with prefilter");
     let mut engine_without_prefilter =
-        DagEngine::from_ruleset_with_config(ruleset, config_without_prefilter)
+        SigmaEngine::from_ruleset_with_config(ruleset, config_without_prefilter)
             .expect("Failed to create engine without prefilter");
 
     // Print configuration

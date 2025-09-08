@@ -96,15 +96,14 @@ pub mod dag;
 pub mod profiling;
 
 // Primary engine interface - simplified to use DagEngine directly
-pub use dag::engine::{
-    DagEngine as SigmaEngine, DagEngineBuilder as SigmaEngineBuilder, DagEngineConfig,
-};
+pub use dag::engine::{DagEngine as SigmaEngine, DagEngineBuilder as SigmaEngineBuilder};
 pub use dag::evaluator::DagEvaluationResult as EngineResult;
 
 // Compiler and configuration
 pub use compiler::{Compiler, FieldMapping};
 pub use config::{
-    BatchConfig, EngineConfig, ExecutionStrategy, MemoryConfig, PerformanceConfig, SecurityConfig,
+    BatchConfig, EngineConfig, ExecutionStrategy, MemoryConfig, ParallelConfig, PerformanceConfig,
+    SecurityConfig,
 };
 
 // Core types and errors

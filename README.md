@@ -73,7 +73,7 @@ detection:
 ### Multiple Rules with Field Mapping
 
 ```rust
-use sigma_engine::{Compiler, FieldMapping, SigmaEngine, DagEngineConfig};
+use sigma_engine::{Compiler, FieldMapping, SigmaEngine, EngineConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up field mapping for custom taxonomy
@@ -109,7 +109,7 @@ detection:
     ];
 
     // Create engine with custom compiler and configuration
-    let config = DagEngineConfig::default();
+    let config = EngineConfig::default();
     let mut engine = SigmaEngine::from_rules_with_compiler(&rules, compiler, config)?;
 
     let event = serde_json::json!({
@@ -162,7 +162,7 @@ detection:
 ### Advanced Configuration
 
 ```rust
-use sigma_engine::{SigmaEngine, DagEngineConfig};
+use sigma_engine::{SigmaEngine, EngineConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rule_yaml = r#"
@@ -174,12 +174,7 @@ detection:
 "#;
 
     // Configure for high-performance scenarios
-    let config = DagEngineConfig {
-        enable_optimization: true,
-        enable_parallel_processing: true,
-        enable_prefilter: true,
-        ..Default::default()
-    };
+    let config = EngineConfig::high_performance();
 
     // Use builder pattern for advanced configuration
     let mut engine = SigmaEngine::builder()
@@ -203,18 +198,34 @@ detection:
 - **Configurable Optimization**: Multiple optimization levels and caching strategies
 
 ```rust
-use sigma_engine::{SigmaEngine, DagEngineConfig};
+use sigma_engine::{SigmaEngine, EngineConfig};
 
 // Enable high-performance prefiltering
-let config = DagEngineConfig {
-    enable_prefilter: true,
-    enable_optimization: true,
-    ..Default::default()
-};
+let config = EngineConfig::high_performance();
 
 let mut engine = SigmaEngine::builder()
     .with_config(config)
     .build(&rules)?;
+```
+
+## Configuration
+
+The SIGMA engine uses a unified configuration system with preset configurations for common use cases:
+
+```rust
+use sigma_engine::EngineConfig;
+
+// Preset configurations
+let dev_config = EngineConfig::development();        // Fast compilation, minimal optimization
+let prod_config = EngineConfig::default();           // Balanced performance and compilation time
+let perf_config = EngineConfig::high_performance();  // Maximum runtime performance
+let stream_config = EngineConfig::streaming();       // Optimized for high-throughput streaming
+
+// Custom configuration
+let custom_config = EngineConfig::new()
+    .with_parallel_processing(true)
+    .with_prefilter(true)
+    .with_batch_size(1000);
 ```
 
 ## API Overview
@@ -225,8 +236,14 @@ let mut engine = SigmaEngine::from_rules(&[rule_yaml])?;
 
 // Builder pattern with configuration
 let mut engine = SigmaEngine::builder()
+    .with_config(EngineConfig::high_performance())
+    .build(&[rule_yaml])?;
+
+// Builder pattern with individual settings
+let mut engine = SigmaEngine::builder()
     .with_prefilter(true)
     .with_optimization(true)
+    .with_parallel_processing(true)
     .build(&[rule_yaml])?;
 
 // Custom compiler and configuration
