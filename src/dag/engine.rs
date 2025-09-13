@@ -119,18 +119,6 @@ impl DagEngineBuilder {
         self
     }
 
-    /// Enable or disable parallel processing.
-    pub fn with_parallel_processing(mut self, enable: bool) -> Self {
-        self.config.enable_parallel_processing = enable;
-        self
-    }
-
-    /// Enable or disable prefiltering.
-    pub fn with_prefilter(mut self, enable: bool) -> Self {
-        self.config.enable_prefilter = enable;
-        self
-    }
-
     /// Build the engine from SIGMA rule YAML strings.
     pub fn build(self, rule_yamls: &[&str]) -> Result<DagEngine> {
         match self.compiler {
@@ -159,11 +147,10 @@ impl DagEngine {
     ///
     /// # Example
     /// ```rust,ignore
-    /// use sigma_engine::SigmaEngine;
+    /// use sigma_engine::{SigmaEngine, EngineConfig};
     ///
     /// let engine = SigmaEngine::builder()
-    ///     .with_optimization(true)
-    ///     .with_prefilter(true)
+    ///     .with_config(EngineConfig::production())
     ///     .build(&[rule_yaml])?;
     /// ```
     pub fn builder() -> DagEngineBuilder {
@@ -656,9 +643,10 @@ mod tests {
 
     #[test]
     fn test_dag_engine_builder_chaining() {
-        let builder = DagEngineBuilder::new()
+        let config = crate::config::EngineConfig::new()
             .with_parallel_processing(false)
             .with_prefilter(false);
+        let builder = DagEngineBuilder::new().with_config(config);
 
         assert!(!builder.config.enable_parallel_processing);
         assert!(!builder.config.enable_prefilter);
@@ -673,7 +661,11 @@ detection:
         EventID: 4624
     condition: selection
 "#;
-        let builder = DagEngineBuilder::new().with_parallel_processing(false);
+        let config = crate::config::EngineConfig {
+            enable_parallel_processing: false,
+            ..Default::default()
+        };
+        let builder = DagEngineBuilder::new().with_config(config);
 
         let result = builder.build(&[rule_yaml]);
 
@@ -956,8 +948,11 @@ detection:
         // Test that the builder() method exists and returns a DagEngineBuilder
         let builder = DagEngine::builder();
 
-        // Test that we can chain builder methods
-        let builder = builder.with_prefilter(false).with_parallel_processing(true);
+        // Test that we can apply configuration via with_config
+        let config = crate::config::EngineConfig::new()
+            .with_prefilter(false)
+            .with_parallel_processing(true);
+        let builder = builder.with_config(config);
 
         // Verify the configuration was set correctly
         assert!(!builder.config.enable_prefilter);
