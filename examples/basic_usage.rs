@@ -96,14 +96,14 @@ detection:
     println!("Compiled {} rules", rules.len());
 
     // Create engine with proper field mapping for ProcessImage -> Image and ProcessCommandLine -> CommandLine
-    use sigma_engine::{Compiler, DagEngineConfig, FieldMapping};
+    use sigma_engine::{Compiler, EngineConfig, FieldMapping};
 
     let mut field_mapping = FieldMapping::new();
     field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
     field_mapping.add_mapping("ProcessCommandLine".to_string(), "CommandLine".to_string());
 
     let compiler = Compiler::with_field_mapping(field_mapping);
-    let config = DagEngineConfig::default();
+    let config = EngineConfig::default();
     let mut engine = SigmaEngine::from_rules_with_compiler(&rules, compiler, config)?;
 
     // Test PowerShell event
@@ -130,7 +130,7 @@ detection:
     let mut simple_field_mapping = FieldMapping::new();
     simple_field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
     let simple_compiler = Compiler::with_field_mapping(simple_field_mapping);
-    let simple_config = DagEngineConfig::default();
+    let simple_config = EngineConfig::default();
     let mut simple_engine =
         SigmaEngine::from_rules_with_compiler(&[simple_rule], simple_compiler, simple_config)?;
 
@@ -153,7 +153,7 @@ detection:
     let mut endswith_field_mapping = FieldMapping::new();
     endswith_field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
     let endswith_compiler = Compiler::with_field_mapping(endswith_field_mapping);
-    let endswith_config = DagEngineConfig::default();
+    let endswith_config = EngineConfig::default();
     let mut endswith_engine = SigmaEngine::from_rules_with_compiler(
         &[endswith_rule],
         endswith_compiler,
@@ -176,7 +176,7 @@ detection:
     let mut contains_field_mapping = FieldMapping::new();
     contains_field_mapping.add_mapping("ProcessCommandLine".to_string(), "CommandLine".to_string());
     let contains_compiler = Compiler::with_field_mapping(contains_field_mapping);
-    let contains_config = DagEngineConfig::default();
+    let contains_config = EngineConfig::default();
     let mut contains_engine = SigmaEngine::from_rules_with_compiler(
         &[contains_rule],
         contains_compiler,
@@ -199,7 +199,7 @@ detection:
     let mut exact_field_mapping = FieldMapping::new();
     exact_field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
     let exact_compiler = Compiler::with_field_mapping(exact_field_mapping);
-    let exact_config = DagEngineConfig::default();
+    let exact_config = EngineConfig::default();
     let mut exact_engine = SigmaEngine::from_rules_with_compiler(
         &[exact_endswith_rule],
         exact_compiler,
@@ -227,7 +227,7 @@ detection:
     let mut two_field_mapping = FieldMapping::new();
     two_field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
     let two_compiler = Compiler::with_field_mapping(two_field_mapping);
-    let two_config = DagEngineConfig::default();
+    let two_config = EngineConfig::default();
     let mut two_engine =
         SigmaEngine::from_rules_with_compiler(&[two_conditions_rule], two_compiler, two_config)?;
 
@@ -250,7 +250,7 @@ detection:
     three_field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
     three_field_mapping.add_mapping("ProcessCommandLine".to_string(), "CommandLine".to_string());
     let three_compiler = Compiler::with_field_mapping(three_field_mapping);
-    let three_config = DagEngineConfig::default();
+    let three_config = EngineConfig::default();
     let mut three_engine = SigmaEngine::from_rules_with_compiler(
         &[three_conditions_rule],
         three_compiler,
@@ -295,7 +295,7 @@ detection:
     let mut recon_field_mapping = FieldMapping::new();
     recon_field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
     let recon_compiler = Compiler::with_field_mapping(recon_field_mapping);
-    let recon_config = DagEngineConfig::default();
+    let recon_config = EngineConfig::default();
     let mut recon_engine =
         SigmaEngine::from_rules_with_compiler(&[recon_rule_only], recon_compiler, recon_config)?;
 
@@ -323,7 +323,7 @@ detection:
     ps_field_mapping.add_mapping("ProcessImage".to_string(), "Image".to_string());
     ps_field_mapping.add_mapping("ProcessCommandLine".to_string(), "CommandLine".to_string());
     let ps_compiler = Compiler::with_field_mapping(ps_field_mapping);
-    let ps_config = DagEngineConfig::default();
+    let ps_config = EngineConfig::default();
     let mut ps_engine =
         SigmaEngine::from_rules_with_compiler(&[powershell_rule_only], ps_compiler, ps_config)?;
 

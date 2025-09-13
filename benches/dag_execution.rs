@@ -5,7 +5,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::json;
-use sigma_engine::{Compiler, DagEngineConfig, SigmaEngine};
+use sigma_engine::{Compiler, EngineConfig, SigmaEngine};
 use std::hint::black_box;
 
 /// Benchmark DAG engine execution through SigmaEngine
@@ -31,7 +31,7 @@ level: high
     let mut compiler = Compiler::new();
     let ruleset = compiler.compile_ruleset(&[rule_yaml]).unwrap();
     let mut engine =
-        SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
+        SigmaEngine::from_ruleset_with_config(ruleset, EngineConfig::default()).unwrap();
 
     let test_event = json!({
         "EventID": "4104",
@@ -69,7 +69,7 @@ level: medium
     let mut compiler = Compiler::new();
     let ruleset = compiler.compile_ruleset(&[rule_yaml]).unwrap();
     let mut engine =
-        SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
+        SigmaEngine::from_ruleset_with_config(ruleset, EngineConfig::default()).unwrap();
 
     let test_event = json!({
         "EventID": "11",
@@ -140,7 +140,7 @@ detection:
         let mut compiler = Compiler::new();
         let ruleset = compiler.compile_ruleset(&rules).unwrap();
         let mut engine =
-            SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
+            SigmaEngine::from_ruleset_with_config(ruleset, EngineConfig::default()).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("optimization", optimization),
@@ -210,7 +210,7 @@ detection:
     let mut compiler = Compiler::new();
     let ruleset = compiler.compile_ruleset(&shared_rules).unwrap();
     let mut engine =
-        SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
+        SigmaEngine::from_ruleset_with_config(ruleset, EngineConfig::default()).unwrap();
 
     group.bench_function("shared_primitives", |b| {
         b.iter(|| {
@@ -254,7 +254,7 @@ level: medium
         if let Ok(ruleset) = compiler.compile_ruleset(&[&rule_yaml]) {
             // Test with default config (uses the current threshold logic)
             if let Ok(mut engine) =
-                SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default())
+                SigmaEngine::from_ruleset_with_config(ruleset, EngineConfig::default())
             {
                 let test_event = json!({
                     "EventID": "1",

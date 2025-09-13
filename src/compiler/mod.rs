@@ -1015,8 +1015,7 @@ detection:
 
         // Create a DAG engine and test execution
         let mut engine =
-            DagEngine::from_ruleset_with_config(ruleset, crate::DagEngineConfig::default())
-                .unwrap();
+            DagEngine::from_ruleset_with_config(ruleset, crate::EngineConfig::default()).unwrap();
 
         // Test with matching event
         let matching_event = json!({

@@ -394,10 +394,35 @@ impl Default for SecurityConfig {
     }
 }
 
+/// Configuration for parallel processing in the DAG engine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParallelConfig {
+    /// Number of threads to use for parallel processing.
+    pub num_threads: usize,
+    /// Minimum number of rules per thread for parallel processing.
+    pub min_rules_per_thread: usize,
+    /// Enable parallel processing of events within batches.
+    pub enable_event_parallelism: bool,
+    /// Minimum batch size to enable parallel processing.
+    pub min_batch_size_for_parallelism: usize,
+}
+
+impl Default for ParallelConfig {
+    fn default() -> Self {
+        Self {
+            num_threads: num_cpus::get(),
+            min_rules_per_thread: 10,
+            enable_event_parallelism: true,
+            min_batch_size_for_parallelism: 100,
+        }
+    }
+}
+
 /// Comprehensive SIGMA Engine configuration.
 ///
 /// This structure provides centralized control over all aspects of the SIGMA engine
-/// including batch processing, memory management, performance tuning, and security.
+/// including batch processing, memory management, performance tuning, security,
+/// parallel processing, and prefiltering.
 ///
 /// # Example
 /// ```rust,ignore
@@ -405,10 +430,11 @@ impl Default for SecurityConfig {
 ///
 /// let config = EngineConfig::new()
 ///     .with_batch_size(500)
-///     .with_execution_strategy(ExecutionStrategy::UltraFast)
-///     .with_execution_timeout(Duration::from_millis(50));
+///     .with_execution_strategy(ExecutionStrategy::Performance)
+///     .with_parallel_processing(true)
+///     .with_prefilter(true);
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Batch processing configuration
     pub batch: BatchConfig,
@@ -420,6 +446,27 @@ pub struct EngineConfig {
     pub security: SecurityConfig,
     /// Regex cache configuration
     pub cache: CacheConfig,
+    /// Enable parallel processing for rule evaluation
+    pub enable_parallel_processing: bool,
+    /// Parallel processing configuration
+    pub parallel_config: ParallelConfig,
+    /// Enable literal prefiltering for fast event elimination
+    pub enable_prefilter: bool,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            batch: BatchConfig::default(),
+            memory: MemoryConfig::default(),
+            performance: PerformanceConfig::default(),
+            security: SecurityConfig::default(),
+            cache: CacheConfig::default(),
+            enable_parallel_processing: false,
+            parallel_config: ParallelConfig::default(),
+            enable_prefilter: true,
+        }
+    }
 }
 
 impl EngineConfig {
@@ -458,6 +505,14 @@ impl EngineConfig {
                 analyze_complexity: false, // Skip for performance
                 reject_dangerous: true,
             },
+            enable_parallel_processing: true,
+            parallel_config: ParallelConfig {
+                num_threads: rayon::current_num_threads(),
+                min_rules_per_thread: 5,
+                enable_event_parallelism: true,
+                min_batch_size_for_parallelism: 50,
+            },
+            enable_prefilter: true,
         }
     }
 
@@ -507,6 +562,62 @@ impl EngineConfig {
                 reject_dangerous: true,
                 ..Default::default()
             },
+            enable_parallel_processing: false,
+            enable_prefilter: false,
+            ..Default::default()
+        }
+    }
+
+    /// Create a configuration optimized for high-performance parallel processing.
+    pub fn high_performance() -> Self {
+        Self {
+            batch: BatchConfig {
+                preferred_batch_size: 1000,
+                execution_strategy: ExecutionStrategy::Performance,
+                enable_early_termination: true,
+                ..Default::default()
+            },
+            performance: PerformanceConfig {
+                enable_dag_optimization: true,
+                dag_optimization_level: 3,
+                execution_strategy: ExecutionStrategy::Performance,
+                ..Default::default()
+            },
+            enable_parallel_processing: true,
+            parallel_config: ParallelConfig {
+                num_threads: rayon::current_num_threads(),
+                min_rules_per_thread: 5,
+                enable_event_parallelism: true,
+                min_batch_size_for_parallelism: 50,
+            },
+            enable_prefilter: true,
+            ..Default::default()
+        }
+    }
+
+    /// Create a configuration for streaming workloads.
+    pub fn streaming() -> Self {
+        Self {
+            batch: BatchConfig {
+                preferred_batch_size: 500,
+                execution_strategy: ExecutionStrategy::Performance,
+                enable_early_termination: false, // Process all events in stream
+                ..Default::default()
+            },
+            performance: PerformanceConfig {
+                enable_dag_optimization: true,
+                dag_optimization_level: 3,
+                execution_strategy: ExecutionStrategy::Performance,
+                ..Default::default()
+            },
+            enable_parallel_processing: true,
+            parallel_config: ParallelConfig {
+                num_threads: rayon::current_num_threads(),
+                min_rules_per_thread: 10,
+                enable_event_parallelism: true,
+                min_batch_size_for_parallelism: 100,
+            },
+            enable_prefilter: true,
             ..Default::default()
         }
     }
@@ -580,6 +691,46 @@ impl EngineConfig {
     /// Disable execution timeout.
     pub fn without_execution_timeout(mut self) -> Self {
         self.performance.execution_timeout = None;
+        self
+    }
+
+    // Builder methods for parallel processing configuration
+
+    /// Enable or disable parallel processing.
+    pub fn with_parallel_processing(mut self, enable: bool) -> Self {
+        self.enable_parallel_processing = enable;
+        self
+    }
+
+    /// Set the number of threads for parallel processing.
+    pub fn with_parallel_threads(mut self, num_threads: usize) -> Self {
+        self.parallel_config.num_threads = num_threads;
+        self
+    }
+
+    /// Set minimum rules per thread for parallel processing.
+    pub fn with_min_rules_per_thread(mut self, min_rules: usize) -> Self {
+        self.parallel_config.min_rules_per_thread = min_rules;
+        self
+    }
+
+    /// Enable or disable event parallelism within batches.
+    pub fn with_event_parallelism(mut self, enable: bool) -> Self {
+        self.parallel_config.enable_event_parallelism = enable;
+        self
+    }
+
+    /// Set minimum batch size for parallel processing.
+    pub fn with_min_batch_size_for_parallelism(mut self, min_size: usize) -> Self {
+        self.parallel_config.min_batch_size_for_parallelism = min_size;
+        self
+    }
+
+    // Builder methods for prefilter configuration
+
+    /// Enable or disable literal prefiltering.
+    pub fn with_prefilter(mut self, enable: bool) -> Self {
+        self.enable_prefilter = enable;
         self
     }
 

@@ -5,7 +5,7 @@
 //! multiple rules compilation bug detection.
 
 use serde_json::json;
-use sigma_engine::{Compiler, DagEngineConfig, FieldMapping, Primitive, SigmaEngine};
+use sigma_engine::{Compiler, EngineConfig, FieldMapping, Primitive, SigmaEngine};
 
 #[test]
 fn test_crate_structure_compiles() {
@@ -94,7 +94,7 @@ detection:
 
     // Test individual rule compilation - both should work
     let compiler1 = Compiler::with_field_mapping(field_mapping.clone());
-    let config1 = DagEngineConfig::default();
+    let config1 = EngineConfig::default();
     let mut engine1 = SigmaEngine::from_rules_with_compiler(&[rule1], compiler1, config1)
         .expect("Failed to create engine 1");
     let result1 = engine1
@@ -106,7 +106,7 @@ detection:
     );
 
     let compiler2 = Compiler::with_field_mapping(field_mapping.clone());
-    let config2 = DagEngineConfig::default();
+    let config2 = EngineConfig::default();
     let mut engine2 = SigmaEngine::from_rules_with_compiler(&[rule2], compiler2, config2)
         .expect("Failed to create engine 2");
     let result2 = engine2
@@ -119,7 +119,7 @@ detection:
 
     // Test multiple rules compilation - THIS IS WHERE THE BUG OCCURS
     let compiler_multi = Compiler::with_field_mapping(field_mapping);
-    let config_multi = DagEngineConfig::default();
+    let config_multi = EngineConfig::default();
     let mut engine_multi =
         SigmaEngine::from_rules_with_compiler(&[rule1, rule2], compiler_multi, config_multi)
             .expect("Failed to create multi engine");
@@ -222,7 +222,7 @@ detection:
         (rule3, "CommandLine rule"),
     ] {
         let compiler = Compiler::with_field_mapping(field_mapping.clone());
-        let config = DagEngineConfig::default();
+        let config = EngineConfig::default();
         let mut engine = SigmaEngine::from_rules_with_compiler(&[rule], compiler, config)
             .unwrap_or_else(|_| panic!("Failed to create engine for {rule_name}"));
         let result = engine
@@ -236,7 +236,7 @@ detection:
 
     // Test multiple rules compilation
     let compiler_multi = Compiler::with_field_mapping(field_mapping);
-    let config_multi = DagEngineConfig::default();
+    let config_multi = EngineConfig::default();
     let mut engine_multi =
         SigmaEngine::from_rules_with_compiler(&[rule1, rule2, rule3], compiler_multi, config_multi)
             .expect("Failed to create multi engine");
@@ -301,7 +301,7 @@ detection:
 
     // Test multiple rules compilation
     let compiler = Compiler::with_field_mapping(field_mapping);
-    let config = DagEngineConfig::default();
+    let config = EngineConfig::default();
     let mut engine = SigmaEngine::from_rules_with_compiler(&[rule1, rule2], compiler, config)
         .expect("Failed to create engine");
 
@@ -379,7 +379,7 @@ detection:
 
     // Test individual rule first to debug
     let compiler_rule1 = Compiler::with_field_mapping(field_mapping.clone());
-    let config_rule1 = DagEngineConfig::default();
+    let config_rule1 = EngineConfig::default();
     let mut engine_rule1 =
         SigmaEngine::from_rules_with_compiler(&[rule1], compiler_rule1, config_rule1)
             .expect("Failed to create rule1 engine");
@@ -389,7 +389,7 @@ detection:
 
     // Test multiple rules compilation
     let compiler = Compiler::with_field_mapping(field_mapping);
-    let config = DagEngineConfig::default();
+    let config = EngineConfig::default();
     let mut engine = SigmaEngine::from_rules_with_compiler(&[rule1, rule2], compiler, config)
         .expect("Failed to create engine");
 
@@ -472,7 +472,7 @@ detection:
 
     // Test multiple rules compilation
     let compiler = Compiler::with_field_mapping(field_mapping);
-    let config = DagEngineConfig::default();
+    let config = EngineConfig::default();
     let mut engine = SigmaEngine::from_rules_with_compiler(&[rule1, rule2], compiler, config)
         .expect("Failed to create engine");
 
@@ -547,7 +547,7 @@ detection:
 
     // Test multiple rules compilation
     let compiler = Compiler::with_field_mapping(field_mapping);
-    let config = DagEngineConfig::default();
+    let config = EngineConfig::default();
     let mut engine = SigmaEngine::from_rules_with_compiler(&[rule1, rule2], compiler, config)
         .expect("Failed to create engine");
 

@@ -5,7 +5,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::json;
-use sigma_engine::{Compiler, DagEngineConfig, SigmaEngine};
+use sigma_engine::{Compiler, EngineConfig, SigmaEngine};
 use std::hint::black_box;
 
 /// Generate realistic SIGMA rules for scaling benchmarks
@@ -107,7 +107,7 @@ fn bench_rule_scaling_execution(c: &mut Criterion) {
         let mut compiler = Compiler::new();
         let ruleset = compiler.compile_ruleset(&rule_refs).unwrap();
         let mut engine =
-            SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
+            SigmaEngine::from_ruleset_with_config(ruleset, EngineConfig::default()).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("execution", rule_count),
@@ -170,7 +170,7 @@ fn bench_rule_scaling_batch(c: &mut Criterion) {
         let mut compiler = Compiler::new();
         let ruleset = compiler.compile_ruleset(&rule_refs).unwrap();
         let mut engine =
-            SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default()).unwrap();
+            SigmaEngine::from_ruleset_with_config(ruleset, EngineConfig::default()).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("batch_100_events", rule_count),
@@ -202,7 +202,7 @@ fn bench_rule_scaling_memory(c: &mut Criterion) {
                     let mut compiler = Compiler::new();
                     let ruleset = compiler.compile_ruleset(black_box(&rule_refs)).unwrap();
                     let engine =
-                        SigmaEngine::from_ruleset_with_config(ruleset, DagEngineConfig::default());
+                        SigmaEngine::from_ruleset_with_config(ruleset, EngineConfig::default());
                     black_box(engine)
                 })
             },
