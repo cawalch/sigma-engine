@@ -174,7 +174,7 @@ detection:
 "#;
 
     // Configure for high-performance scenarios
-    let config = EngineConfig::high_performance();
+    let config = EngineConfig::production();
 
     // Use builder pattern for advanced configuration
     let mut engine = SigmaEngine::builder()
@@ -201,7 +201,7 @@ detection:
 use sigma_engine::{SigmaEngine, EngineConfig};
 
 // Enable high-performance prefiltering
-let config = EngineConfig::high_performance();
+let config = EngineConfig::production();
 
 let mut engine = SigmaEngine::builder()
     .with_config(config)
@@ -216,10 +216,9 @@ The SIGMA engine uses a unified configuration system with preset configurations 
 use sigma_engine::EngineConfig;
 
 // Preset configurations
-let dev_config = EngineConfig::development();        // Fast compilation, minimal optimization
-let prod_config = EngineConfig::default();           // Balanced performance and compilation time
-let perf_config = EngineConfig::high_performance();  // Maximum runtime performance
-let stream_config = EngineConfig::streaming();       // Optimized for high-throughput streaming
+let dev_config = EngineConfig::development();
+let prod_config = EngineConfig::production();
+let default_config = EngineConfig::default();
 
 // Custom configuration
 let custom_config = EngineConfig::new()
@@ -236,14 +235,12 @@ let mut engine = SigmaEngine::from_rules(&[rule_yaml])?;
 
 // Builder pattern with configuration
 let mut engine = SigmaEngine::builder()
-    .with_config(EngineConfig::high_performance())
+    .with_config(EngineConfig::production())
     .build(&[rule_yaml])?;
 
-// Builder pattern with individual settings
+// Builder pattern with individual settings via EngineConfig
 let mut engine = SigmaEngine::builder()
-    .with_prefilter(true)
-    .with_optimization(true)
-    .with_parallel_processing(true)
+    .with_config(EngineConfig::new().with_prefilter(true).with_parallel_processing(true))
     .build(&[rule_yaml])?;
 
 // Custom compiler and configuration
