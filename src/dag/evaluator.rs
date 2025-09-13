@@ -4,7 +4,6 @@
 //! the optimal evaluation strategy based on input characteristics:
 //! - Single event evaluation for individual events
 //! - Batch processing for multiple events
-//! - Parallel processing for large rule sets (when enabled)
 
 use super::prefilter::LiteralPrefilter;
 use super::types::{CompiledDag, LogicalOp, NodeType};
@@ -35,33 +34,19 @@ pub enum EvaluationStrategy {
     SingleVec,
     /// Batch processing with memory pools
     Batch,
-    /// Parallel processing with rule partitioning
-    Parallel,
 }
 
 /// Configuration for the unified evaluator.
 #[derive(Debug, Clone)]
 pub struct EvaluatorConfig {
-    /// Enable parallel processing
-    pub enable_parallel: bool,
-    /// Minimum number of rules to use parallel processing
-    pub min_rules_for_parallel: usize,
-    /// Minimum batch size to use parallel processing
-    pub min_batch_size_for_parallel: usize,
     /// Threshold for using Vec vs HashMap storage (number of nodes)
     pub vec_storage_threshold: usize,
-    /// Number of threads for parallel processing
-    pub num_threads: usize,
 }
 
 impl Default for EvaluatorConfig {
     fn default() -> Self {
         Self {
-            enable_parallel: false,
-            min_rules_for_parallel: 10,
-            min_batch_size_for_parallel: 100,
             vec_storage_threshold: 32,
-            num_threads: num_cpus::get(),
         }
     }
 }
@@ -73,14 +58,6 @@ struct BatchMemoryPool {
     primitive_results: Vec<Vec<bool>>,
     /// Node results for all events [node_id][event_idx] -> bool
     node_results: Vec<Vec<bool>>,
-    /// Result buffer for collecting final results
-    result_buffer: Vec<DagEvaluationResult>,
-    /// Buffer for matched rule IDs per event
-    matched_rules_buffer: Vec<Vec<RuleId>>,
-    /// Arena for rule ID storage to minimize allocations
-    rule_id_arena: Vec<RuleId>,
-    /// Offsets into the arena for each event
-    arena_offsets: Vec<usize>,
 }
 
 impl BatchMemoryPool {
@@ -88,10 +65,6 @@ impl BatchMemoryPool {
         Self {
             primitive_results: Vec::new(),
             node_results: Vec::new(),
-            result_buffer: Vec::new(),
-            matched_rules_buffer: Vec::new(),
-            rule_id_arena: Vec::new(),
-            arena_offsets: Vec::new(),
         }
     }
 
@@ -107,12 +80,6 @@ impl BatchMemoryPool {
         for node_buffer in &mut self.node_results {
             node_buffer.resize(batch_size, false);
         }
-
-        // Resize other buffers
-        self.result_buffer
-            .resize(batch_size, DagEvaluationResult::default());
-        self.matched_rules_buffer.resize(batch_size, Vec::new());
-        self.arena_offsets.resize(batch_size + 1, 0);
     }
 
     fn reset(&mut self) {
@@ -123,14 +90,6 @@ impl BatchMemoryPool {
         for node_buffer in &mut self.node_results {
             node_buffer.fill(false);
         }
-        for result in &mut self.result_buffer {
-            *result = DagEvaluationResult::default();
-        }
-        for buffer in &mut self.matched_rules_buffer {
-            buffer.clear();
-        }
-        self.rule_id_arena.clear();
-        self.arena_offsets.fill(0);
     }
 }
 
@@ -223,12 +182,7 @@ impl DagEvaluator {
             }
         }
         // For multiple events
-        else if self.config.enable_parallel
-            && event_count >= self.config.min_batch_size_for_parallel
-            && self.dag.rule_results.len() >= self.config.min_rules_for_parallel
-        {
-            EvaluationStrategy::Parallel
-        } else {
+        else {
             EvaluationStrategy::Batch
         }
     }
@@ -268,7 +222,6 @@ impl DagEvaluator {
         let strategy = self.select_strategy(events.len());
         match strategy {
             EvaluationStrategy::Batch => self.evaluate_batch_internal(events),
-            EvaluationStrategy::Parallel => self.evaluate_batch_parallel(events),
             _ => {
                 // Fallback to single event evaluation for each event
                 let mut results = Vec::with_capacity(events.len());
@@ -669,17 +622,6 @@ impl DagEvaluator {
         Ok(results)
     }
 
-    /// Parallel batch evaluation (simplified implementation).
-    ///
-    /// For now, this falls back to regular batch processing.
-    /// A full parallel implementation would require more complex thread management
-    /// and synchronization, which adds significant complexity.
-    fn evaluate_batch_parallel(&mut self, events: &[Value]) -> Result<Vec<DagEvaluationResult>> {
-        // For simplicity, fall back to batch processing
-        // A full parallel implementation would be significantly more complex
-        self.evaluate_batch_internal(events)
-    }
-
     /// Evaluate a single primitive for testing purposes.
     pub fn evaluate_primitive(&mut self, primitive_id: u32, event: &Value) -> Result<bool> {
         if let Some(primitive) = self.primitives.get(&primitive_id) {
@@ -763,9 +705,6 @@ mod tests {
     #[test]
     fn test_evaluator_config_default() {
         let config = EvaluatorConfig::default();
-        assert!(!config.enable_parallel);
-        assert_eq!(config.min_rules_for_parallel, 10);
-        assert_eq!(config.min_batch_size_for_parallel, 100);
         assert_eq!(config.vec_storage_threshold, 32);
     }
 
@@ -789,7 +728,6 @@ mod tests {
 
         assert_eq!(pool.primitive_results.len(), 3);
         assert_eq!(pool.node_results.len(), 5);
-        assert_eq!(pool.result_buffer.len(), 10);
 
         pool.reset();
         // Verify all buffers are reset

@@ -11,30 +11,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Configuration for parallel processing in the DAG engine.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ParallelConfig {
-    /// Number of threads to use for parallel processing.
-    pub num_threads: usize,
-    /// Minimum number of rules per thread for parallel processing.
-    pub min_rules_per_thread: usize,
-    /// Enable parallel processing of events within batches.
-    pub enable_event_parallelism: bool,
-    /// Minimum batch size to enable parallel processing.
-    pub min_batch_size_for_parallelism: usize,
-}
-
-impl Default for ParallelConfig {
-    fn default() -> Self {
-        Self {
-            num_threads: num_cpus::get(),
-            min_rules_per_thread: 10,
-            enable_event_parallelism: true,
-            min_batch_size_for_parallelism: 100,
-        }
-    }
-}
-
 /// Configuration for DAG engine behavior and optimization.
 ///
 /// Primary DAG execution engine for SIGMA rules.
@@ -239,13 +215,9 @@ impl DagEngine {
         };
 
         // Build DAG from ruleset
-        let mut builder = DagBuilder::new()
-            .with_optimization(true) // Always enable optimization in simplified config
-            .with_prefilter(config.enable_prefilter);
-
-        // Always optimize for production use
+        let mut builder = DagBuilder::new();
+        // Optimize before building to avoid DCE removing primitives when no rules exist yet
         builder = builder.optimize();
-
         let dag = builder.from_ruleset(&ruleset).build()?;
 
         // Build primitive matcher map
@@ -271,11 +243,7 @@ impl DagEngine {
             None => {
                 // Create evaluator config from engine config
                 let evaluator_config = EvaluatorConfig {
-                    enable_parallel: self.config.enable_parallel_processing,
-                    min_rules_for_parallel: 20,       // Reasonable default
-                    min_batch_size_for_parallel: 100, // Reasonable default
-                    vec_storage_threshold: 32,        // Reasonable default
-                    num_threads: num_cpus::get(),     // Use all available cores
+                    vec_storage_threshold: 32,
                 };
 
                 DagEvaluator::with_primitives_and_config(
@@ -357,7 +325,6 @@ impl DagEngine {
     ///
     /// The unified evaluator automatically selects the optimal strategy:
     /// - Batch processing for multiple events
-    /// - Parallel processing for large rule sets (when enabled)
     /// - Single event processing for small batches
     ///
     /// # Arguments
@@ -379,11 +346,7 @@ impl DagEngine {
             None => {
                 // Create evaluator config from engine config
                 let evaluator_config = EvaluatorConfig {
-                    enable_parallel: self.config.enable_parallel_processing,
-                    min_rules_for_parallel: 20,       // Reasonable default
-                    min_batch_size_for_parallel: 100, // Reasonable default
-                    vec_storage_threshold: 32,        // Reasonable default
-                    num_threads: num_cpus::get(),     // Use all available cores
+                    vec_storage_threshold: 32,
                 };
 
                 DagEvaluator::with_primitives_and_config(

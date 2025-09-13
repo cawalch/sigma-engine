@@ -194,7 +194,6 @@ detection:
 - **High Performance**: DAG-based execution with shared computation optimization
 - **Batch Processing**: Optimized batch evaluation for high-throughput scenarios
 - **Zero-Copy Processing**: Efficient memory usage with `serde_json::Value`
-- **Parallel Processing**: Multi-threaded evaluation for large event batches
 - **Configurable Optimization**: Multiple optimization levels and caching strategies
 
 ```rust
@@ -222,7 +221,6 @@ let default_config = EngineConfig::default();
 
 // Custom configuration
 let custom_config = EngineConfig::new()
-    .with_parallel_processing(true)
     .with_prefilter(true)
     .with_batch_size(1000);
 ```
@@ -240,7 +238,7 @@ let mut engine = SigmaEngine::builder()
 
 // Builder pattern with individual settings via EngineConfig
 let mut engine = SigmaEngine::builder()
-    .with_config(EngineConfig::new().with_prefilter(true).with_parallel_processing(true))
+    .with_config(EngineConfig::new().with_prefilter(true))
     .build(&[rule_yaml])?;
 
 // Custom compiler and configuration

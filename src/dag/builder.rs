@@ -46,18 +46,6 @@ impl DagBuilder {
         }
     }
 
-    /// Enable or disable optimization passes.
-    pub fn with_optimization(mut self, enable: bool) -> Self {
-        self.enable_optimization = enable;
-        self
-    }
-
-    /// Enable or disable literal prefiltering.
-    pub fn with_prefilter(mut self, enable: bool) -> Self {
-        self.enable_prefilter = enable;
-        self
-    }
-
     /// Build DAG from a compiled ruleset.
     pub fn from_ruleset(mut self, ruleset: &CompiledRuleset) -> Self {
         // First pass: Create primitive nodes (shared across rules)
