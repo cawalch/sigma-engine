@@ -196,10 +196,7 @@ impl DagBuilder {
     fn apply_dag_optimizations(&self, dag: CompiledDag) -> Result<CompiledDag> {
         use super::optimizer::DagOptimizer;
 
-        let optimizer = DagOptimizer::new()
-            .with_cse(true)
-            .with_dce(true)
-            .with_constant_folding(true);
+        let optimizer = DagOptimizer::new().with_cse(true).with_dce(true);
 
         optimizer.optimize(dag)
     }

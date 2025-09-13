@@ -135,23 +135,34 @@ detection:
         "ProcessName": "regedit.exe"
     });
 
-    // Test different optimization scenarios
-    for optimization in ["basic", "advanced"].iter() {
+    // Test with optimization disabled
+    {
         let mut compiler = Compiler::new();
         let ruleset = compiler.compile_ruleset(&rules).unwrap();
-        let mut engine =
-            SigmaEngine::from_ruleset_with_config(ruleset, EngineConfig::default()).unwrap();
+        let config = EngineConfig::default().with_dag_optimization(false);
+        let mut engine = SigmaEngine::from_ruleset_with_config(ruleset, config).unwrap();
 
-        group.bench_with_input(
-            BenchmarkId::new("optimization", optimization),
-            optimization,
-            |b, _| {
-                b.iter(|| {
-                    let result = engine.evaluate(black_box(&test_event));
-                    black_box(result)
-                })
-            },
-        );
+        group.bench_function("no_optimization", |b| {
+            b.iter(|| {
+                let result = engine.evaluate(black_box(&test_event));
+                black_box(result)
+            })
+        });
+    }
+
+    // Test with optimization enabled
+    {
+        let mut compiler = Compiler::new();
+        let ruleset = compiler.compile_ruleset(&rules).unwrap();
+        let config = EngineConfig::default().with_dag_optimization(true);
+        let mut engine = SigmaEngine::from_ruleset_with_config(ruleset, config).unwrap();
+
+        group.bench_function("with_optimization", |b| {
+            b.iter(|| {
+                let result = engine.evaluate(black_box(&test_event));
+                black_box(result)
+            })
+        });
     }
 
     group.finish();
