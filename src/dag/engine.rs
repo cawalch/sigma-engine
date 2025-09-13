@@ -1,7 +1,7 @@
 //! Primary DAG execution engine.
 
 use super::builder::DagBuilder;
-use super::evaluator::{DagEvaluationResult, DagEvaluator, EvaluatorConfig};
+use super::evaluator::{DagEvaluationResult, DagEvaluator};
 use super::prefilter::LiteralPrefilter;
 use super::types::{CompiledDag, DagStatistics};
 use crate::error::Result;
@@ -240,19 +240,11 @@ impl DagEngine {
                 eval.reset();
                 eval
             }
-            None => {
-                // Create evaluator config from engine config
-                let evaluator_config = EvaluatorConfig {
-                    vec_storage_threshold: 32,
-                };
-
-                DagEvaluator::with_primitives_and_config(
-                    self.dag.clone(),
-                    self.primitives.clone(),
-                    self.prefilter.clone(),
-                    evaluator_config,
-                )
-            }
+            None => DagEvaluator::with_primitives_and_prefilter(
+                self.dag.clone(),
+                self.primitives.clone(),
+                self.prefilter.clone(),
+            ),
         };
 
         // Perform evaluation
@@ -343,19 +335,11 @@ impl DagEngine {
                 eval.reset();
                 eval
             }
-            None => {
-                // Create evaluator config from engine config
-                let evaluator_config = EvaluatorConfig {
-                    vec_storage_threshold: 32,
-                };
-
-                DagEvaluator::with_primitives_and_config(
-                    self.dag.clone(),
-                    self.primitives.clone(),
-                    self.prefilter.clone(),
-                    evaluator_config,
-                )
-            }
+            None => DagEvaluator::with_primitives_and_prefilter(
+                self.dag.clone(),
+                self.primitives.clone(),
+                self.prefilter.clone(),
+            ),
         };
 
         // Perform batch evaluation

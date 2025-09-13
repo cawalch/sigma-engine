@@ -3,7 +3,7 @@
 //! These benchmarks specifically test the DAG-based execution engine
 //! performance characteristics and optimization effectiveness.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use serde_json::json;
 use sigma_engine::{Compiler, EngineConfig, SigmaEngine};
 use std::hint::black_box;
@@ -233,6 +233,8 @@ detection:
     group.finish();
 }
 
+/*
+
 /// Benchmark Vec vs HashMap storage strategies for different DAG sizes
 /// This benchmark helps determine the optimal threshold for switching between storage strategies
 fn bench_storage_strategy_threshold(c: &mut Criterion) {
@@ -286,12 +288,13 @@ level: medium
     group.finish();
 }
 
+*/
+
 criterion_group!(
     benches,
     bench_dag_execution,
     bench_execution_strategies,
     bench_dag_optimization_levels,
     bench_dag_shared_computation,
-    bench_storage_strategy_threshold
 );
 criterion_main!(benches);

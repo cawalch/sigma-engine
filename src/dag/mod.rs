@@ -27,7 +27,7 @@ pub mod types;
 // Re-export main types for convenience
 pub use builder::DagBuilder;
 pub use engine::DagEngine;
-pub use evaluator::{DagEvaluationResult, DagEvaluator, EvaluationStrategy, EvaluatorConfig};
+pub use evaluator::{DagEvaluationResult, DagEvaluator, EvaluationStrategy};
 pub use optimizer::DagOptimizer;
 pub use types::{CompiledDag, DagNode, DagStatistics, LogicalOp, NodeId, NodeType};
 

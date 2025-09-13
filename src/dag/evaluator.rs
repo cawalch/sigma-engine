@@ -28,27 +28,10 @@ pub struct DagEvaluationResult {
 /// Evaluation strategy selection based on input characteristics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvaluationStrategy {
-    /// Single event evaluation with HashMap storage
+    /// Single event evaluation
     Single,
-    /// Single event evaluation with Vec storage (for small DAGs)
-    SingleVec,
     /// Batch processing with memory pools
     Batch,
-}
-
-/// Configuration for the unified evaluator.
-#[derive(Debug, Clone)]
-pub struct EvaluatorConfig {
-    /// Threshold for using Vec vs HashMap storage (number of nodes)
-    pub vec_storage_threshold: usize,
-}
-
-impl Default for EvaluatorConfig {
-    fn default() -> Self {
-        Self {
-            vec_storage_threshold: 32,
-        }
-    }
 }
 
 /// Memory pool for batch processing to minimize allocations.
@@ -107,11 +90,6 @@ pub struct DagEvaluator {
     dag: Arc<CompiledDag>,
     /// Compiled primitives for field matching
     primitives: HashMap<u32, CompiledPrimitive>,
-    /// Configuration for strategy selection
-    config: EvaluatorConfig,
-
-    /// Single event evaluation state
-    node_results: HashMap<u32, bool>,
     /// Fast-path evaluation buffer for small DAGs
     fast_results: Vec<bool>,
 
@@ -136,7 +114,7 @@ impl DagEvaluator {
         dag: Arc<CompiledDag>,
         primitives: HashMap<u32, CompiledPrimitive>,
     ) -> Self {
-        Self::with_primitives_and_config(dag, primitives, None, EvaluatorConfig::default())
+        Self::with_primitives_and_prefilter(dag, primitives, None)
     }
 
     /// Create a new DAG evaluator with prefilter support.
@@ -145,22 +123,10 @@ impl DagEvaluator {
         primitives: HashMap<u32, CompiledPrimitive>,
         prefilter: Option<Arc<LiteralPrefilter>>,
     ) -> Self {
-        Self::with_primitives_and_config(dag, primitives, prefilter, EvaluatorConfig::default())
-    }
-
-    /// Create a new DAG evaluator with custom configuration.
-    pub fn with_primitives_and_config(
-        dag: Arc<CompiledDag>,
-        primitives: HashMap<u32, CompiledPrimitive>,
-        prefilter: Option<Arc<LiteralPrefilter>>,
-        config: EvaluatorConfig,
-    ) -> Self {
         let fast_results = vec![false; dag.nodes.len()];
         Self {
             dag,
             primitives,
-            config,
-            node_results: HashMap::new(),
             fast_results,
             batch_pool: BatchMemoryPool::new(),
             nodes_evaluated: 0,
@@ -173,16 +139,9 @@ impl DagEvaluator {
 
     /// Select the optimal evaluation strategy based on input characteristics.
     fn select_strategy(&self, event_count: usize) -> EvaluationStrategy {
-        // For single events
         if event_count == 1 {
-            if self.dag.nodes.len() <= self.config.vec_storage_threshold {
-                EvaluationStrategy::SingleVec
-            } else {
-                EvaluationStrategy::Single
-            }
-        }
-        // For multiple events
-        else {
+            EvaluationStrategy::Single
+        } else {
             EvaluationStrategy::Batch
         }
     }
@@ -203,13 +162,8 @@ impl DagEvaluator {
             self.prefilter_hits += 1;
         }
 
-        // Select strategy and evaluate
-        let strategy = self.select_strategy(1);
-        match strategy {
-            EvaluationStrategy::SingleVec => self.evaluate_single_vec(event),
-            EvaluationStrategy::Single => self.evaluate_single_hashmap(event),
-            _ => unreachable!("Single event should not use batch/parallel strategy"),
-        }
+        // Evaluate single event using unified single-event path
+        self.evaluate_single_vec(event)
     }
 
     /// Evaluate the DAG against multiple events using batch processing.
@@ -257,7 +211,6 @@ impl DagEvaluator {
 
     /// Reset the evaluator state for reuse.
     pub fn reset(&mut self) {
-        self.node_results.clear();
         self.fast_results.fill(false);
         self.batch_pool.reset();
         self.nodes_evaluated = 0;
@@ -331,66 +284,6 @@ impl DagEvaluator {
         })
     }
 
-    /// Single event evaluation using HashMap storage (for larger DAGs).
-    fn evaluate_single_hashmap(&mut self, event: &Value) -> Result<DagEvaluationResult> {
-        self.reset();
-
-        let execution_order = self.dag.execution_order.clone();
-
-        for &node_id in &execution_order {
-            let node = &self.dag.nodes[node_id as usize];
-            self.nodes_evaluated += 1;
-
-            let result = match &node.node_type {
-                NodeType::Primitive { primitive_id } => {
-                    self.primitive_evaluations += 1;
-                    if let Some(primitive) = self.primitives.get(primitive_id) {
-                        let context = EventContext::new(event);
-                        primitive.matches(&context)
-                    } else {
-                        false
-                    }
-                }
-                NodeType::Logical { operation } => {
-                    self.evaluate_logical_operation_with_hashmap(*operation, &node.dependencies)?
-                }
-                NodeType::Result { .. } => {
-                    // Result nodes depend on a single logical node
-                    if node.dependencies.len() == 1 {
-                        *self
-                            .node_results
-                            .get(&node.dependencies[0])
-                            .unwrap_or(&false)
-                    } else {
-                        false
-                    }
-                }
-                _ => false, // Handle other node types
-            };
-
-            self.node_results.insert(node_id, result);
-        }
-
-        // Collect matched rules
-        let mut matched_rules = Vec::new();
-        for (&rule_id, &result_node_id) in &self.dag.rule_results {
-            if self
-                .node_results
-                .get(&result_node_id)
-                .copied()
-                .unwrap_or(false)
-            {
-                matched_rules.push(rule_id);
-            }
-        }
-
-        Ok(DagEvaluationResult {
-            matched_rules,
-            nodes_evaluated: self.nodes_evaluated,
-            primitive_evaluations: self.primitive_evaluations,
-        })
-    }
-
     /// Evaluate logical operation using Vec storage.
     fn evaluate_logical_operation_with_vec(
         &self,
@@ -421,60 +314,6 @@ impl DagEvaluator {
                     ));
                 }
                 Ok(!self.fast_results[dependencies[0] as usize])
-            }
-        }
-    }
-
-    /// Evaluate logical operation using HashMap storage.
-    fn evaluate_logical_operation_with_hashmap(
-        &self,
-        op: LogicalOp,
-        dependencies: &[u32],
-    ) -> Result<bool> {
-        match op {
-            LogicalOp::And => {
-                for &dep_id in dependencies {
-                    let result = self.node_results.get(&dep_id).copied().ok_or_else(|| {
-                        SigmaError::ExecutionError(format!(
-                            "Dependency node {dep_id} not evaluated"
-                        ))
-                    })?;
-                    if !result {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
-            LogicalOp::Or => {
-                for &dep_id in dependencies {
-                    let result = self.node_results.get(&dep_id).copied().ok_or_else(|| {
-                        SigmaError::ExecutionError(format!(
-                            "Dependency node {dep_id} not evaluated"
-                        ))
-                    })?;
-                    if result {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            }
-            LogicalOp::Not => {
-                if dependencies.len() != 1 {
-                    return Err(SigmaError::ExecutionError(
-                        "NOT operation requires exactly one dependency".to_string(),
-                    ));
-                }
-                let result = self
-                    .node_results
-                    .get(&dependencies[0])
-                    .copied()
-                    .ok_or_else(|| {
-                        SigmaError::ExecutionError(format!(
-                            "Dependency node {} not evaluated",
-                            dependencies[0]
-                        ))
-                    })?;
-                Ok(!result)
             }
         }
     }
@@ -703,19 +542,13 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluator_config_default() {
-        let config = EvaluatorConfig::default();
-        assert_eq!(config.vec_storage_threshold, 32);
-    }
-
-    #[test]
     fn test_strategy_selection() {
         let dag = Arc::new(create_test_dag());
         let primitives = create_test_primitives();
         let evaluator = DagEvaluator::with_primitives(dag, primitives);
 
-        // Single event with small DAG should use SingleVec
-        assert_eq!(evaluator.select_strategy(1), EvaluationStrategy::SingleVec);
+        // Single event should use Single
+        assert_eq!(evaluator.select_strategy(1), EvaluationStrategy::Single);
 
         // Multiple events should use Batch
         assert_eq!(evaluator.select_strategy(10), EvaluationStrategy::Batch);
@@ -762,29 +595,6 @@ mod tests {
         evaluator.fast_results[0] = false;
         let result = evaluator
             .evaluate_logical_operation_with_vec(LogicalOp::Not, &[0])
-            .unwrap();
-        assert!(result);
-    }
-
-    #[test]
-    fn test_logical_operations_hashmap() {
-        let dag = Arc::new(create_test_dag());
-        let primitives = create_test_primitives();
-        let mut evaluator = DagEvaluator::with_primitives(dag, primitives);
-
-        // Test AND operation
-        evaluator.node_results.insert(0, true);
-        evaluator.node_results.insert(1, true);
-        let result = evaluator
-            .evaluate_logical_operation_with_hashmap(LogicalOp::And, &[0, 1])
-            .unwrap();
-        assert!(result);
-
-        // Test OR operation
-        evaluator.node_results.insert(0, false);
-        evaluator.node_results.insert(1, true);
-        let result = evaluator
-            .evaluate_logical_operation_with_hashmap(LogicalOp::Or, &[0, 1])
             .unwrap();
         assert!(result);
     }
