@@ -56,10 +56,19 @@ impl Primitive {
     }
 }
 
+/// A single compiled rule containing selection to primitive mappings and the condition expression.
+#[derive(Debug, Clone)]
+pub struct CompiledRule {
+    pub rule_id: RuleId,
+    pub selections: HashMap<String, Vec<PrimitiveId>>, // selection name -> primitive IDs
+    pub condition: String,                             // raw condition string
+}
+
 #[derive(Debug, Clone)]
 pub struct CompiledRuleset {
     pub primitive_map: HashMap<Primitive, PrimitiveId>,
     pub primitives: Vec<Primitive>,
+    pub rules: Vec<CompiledRule>,
 }
 
 impl CompiledRuleset {
@@ -67,6 +76,7 @@ impl CompiledRuleset {
         Self {
             primitive_map: HashMap::new(),
             primitives: Vec::new(),
+            rules: Vec::new(),
         }
     }
 

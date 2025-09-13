@@ -161,9 +161,13 @@ detection:
 
     // Test multiple rules compilation to see the rule_results mapping
     let mut compiler_multi = Compiler::new();
-    let dag_multi = compiler_multi
-        .compile_rules_to_dag(&[rule1, rule2])
+    let ruleset = compiler_multi
+        .compile_ruleset(&[rule1, rule2])
         .expect("Failed to compile multiple rules");
+    let dag_multi = sigma_engine::dag::DagBuilder::new()
+        .from_ruleset(&ruleset)
+        .build()
+        .expect("Failed to build DAG");
 
     // The bug is now fixed: both rules get unique IDs, so two entries in rule_results
     assert_eq!(

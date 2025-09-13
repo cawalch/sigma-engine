@@ -119,18 +119,6 @@ impl DagEngineBuilder {
         self
     }
 
-    /// Enable or disable optimization.
-    pub fn with_optimization(mut self, enable: bool) -> Self {
-        self.config.performance.enable_dag_optimization = enable;
-        self
-    }
-
-    /// Set optimization level (0-3).
-    pub fn with_optimization_level(mut self, level: u8) -> Self {
-        self.config.performance.dag_optimization_level = level.min(3);
-        self
-    }
-
     /// Enable or disable parallel processing.
     pub fn with_parallel_processing(mut self, enable: bool) -> Self {
         self.config.enable_parallel_processing = enable;
@@ -213,37 +201,10 @@ impl DagEngine {
     ) -> Result<Self> {
         use crate::Compiler;
 
-        // Compile rules directly to DAG
+        // Consolidated compilation path: compile to ruleset, then reuse ruleset-based constructor
         let mut compiler = Compiler::new();
-        let dag = compiler.compile_rules_to_dag(rule_yamls)?;
-
-        // Build primitive matcher map from the compiler's primitives
-        let primitives = Self::build_primitive_map_from_compiler(&compiler)?;
-
-        // Build prefilter if enabled
-        let prefilter = if config.enable_prefilter {
-            let prefilter_config = super::prefilter::PrefilterConfig::sigma();
-            match LiteralPrefilter::with_config(compiler.primitives(), prefilter_config) {
-                Ok(filter) => {
-                    if filter.stats().pattern_count > 0 {
-                        Some(Arc::new(filter))
-                    } else {
-                        None
-                    }
-                }
-                Err(_) => None, // Continue without prefilter if creation fails
-            }
-        } else {
-            None
-        };
-
-        Ok(Self {
-            dag: Arc::new(dag),
-            primitives,
-            config,
-            evaluator: None,
-            prefilter,
-        })
+        let ruleset = compiler.compile_ruleset(rule_yamls)?;
+        Self::from_ruleset_with_config(ruleset, config)
     }
 
     /// Create a new DAG engine from SIGMA rule YAML strings with custom compiler and configuration.
@@ -262,36 +223,9 @@ impl DagEngine {
         mut compiler: crate::Compiler,
         config: crate::config::EngineConfig,
     ) -> Result<Self> {
-        // Compile rules directly to DAG using the provided compiler
-        let dag = compiler.compile_rules_to_dag(rule_yamls)?;
-
-        // Build primitive matcher map from the compiler's primitives
-        let primitives = Self::build_primitive_map_from_compiler(&compiler)?;
-
-        // Build prefilter if enabled
-        let prefilter = if config.enable_prefilter {
-            let prefilter_config = super::prefilter::PrefilterConfig::sigma();
-            match LiteralPrefilter::with_config(compiler.primitives(), prefilter_config) {
-                Ok(filter) => {
-                    if filter.stats().pattern_count > 0 {
-                        Some(Arc::new(filter))
-                    } else {
-                        None
-                    }
-                }
-                Err(_) => None, // Continue without prefilter if creation fails
-            }
-        } else {
-            None
-        };
-
-        Ok(Self {
-            dag: Arc::new(dag),
-            primitives,
-            config,
-            evaluator: None,
-            prefilter,
-        })
+        // Consolidated compilation path: compile to ruleset, then reuse ruleset-based constructor
+        let ruleset = compiler.compile_ruleset(rule_yamls)?;
+        Self::from_ruleset_with_config(ruleset, config)
     }
 
     /// Create a new DAG engine with custom configuration.
@@ -319,12 +253,11 @@ impl DagEngine {
 
         // Build DAG from ruleset
         let mut builder = DagBuilder::new()
-            .with_optimization(config.performance.enable_dag_optimization)
+            .with_optimization(true) // Always enable optimization in simplified config
             .with_prefilter(config.enable_prefilter);
 
-        if config.performance.dag_optimization_level > 0 {
-            builder = builder.optimize();
-        }
+        // Always optimize for production use
+        builder = builder.optimize();
 
         let dag = builder.from_ruleset(&ruleset).build()?;
 
@@ -352,10 +285,10 @@ impl DagEngine {
                 // Create evaluator config from engine config
                 let evaluator_config = EvaluatorConfig {
                     enable_parallel: self.config.enable_parallel_processing,
-                    min_rules_for_parallel: self.config.parallel_config.min_rules_per_thread * 2,
+                    min_rules_for_parallel: 20,       // Reasonable default
                     min_batch_size_for_parallel: 100, // Reasonable default
                     vec_storage_threshold: 32,        // Reasonable default
-                    num_threads: self.config.parallel_config.num_threads,
+                    num_threads: num_cpus::get(),     // Use all available cores
                 };
 
                 DagEvaluator::with_primitives_and_config(
@@ -460,10 +393,10 @@ impl DagEngine {
                 // Create evaluator config from engine config
                 let evaluator_config = EvaluatorConfig {
                     enable_parallel: self.config.enable_parallel_processing,
-                    min_rules_for_parallel: self.config.parallel_config.min_rules_per_thread * 2,
+                    min_rules_for_parallel: 20,       // Reasonable default
                     min_batch_size_for_parallel: 100, // Reasonable default
                     vec_storage_threshold: 32,        // Reasonable default
-                    num_threads: self.config.parallel_config.num_threads,
+                    num_threads: num_cpus::get(),     // Use all available cores
                 };
 
                 DagEvaluator::with_primitives_and_config(
@@ -531,25 +464,12 @@ impl DagEngine {
 
         Ok(primitives)
     }
-
-    /// Build primitive matcher map from compiler.
-    fn build_primitive_map_from_compiler(
-        compiler: &crate::Compiler,
-    ) -> Result<HashMap<u32, CompiledPrimitive>> {
-        let mut primitives = HashMap::new();
-
-        for (primitive_id, primitive) in compiler.primitives().iter().enumerate() {
-            let compiled = CompiledPrimitive::from_primitive(primitive.clone())?;
-            primitives.insert(primitive_id as u32, compiled);
-        }
-
-        Ok(primitives)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ExecutionStrategy;
     use crate::ir::{CompiledRuleset, Primitive};
     use std::collections::HashMap;
 
@@ -574,6 +494,7 @@ mod tests {
         CompiledRuleset {
             primitive_map,
             primitives: vec![primitive1, primitive2],
+            rules: Vec::new(),
         }
     }
 
@@ -588,7 +509,10 @@ mod tests {
         match engine {
             Ok(engine) => {
                 assert_eq!(engine.primitive_count(), 2);
-                assert!(engine.config().performance.enable_dag_optimization);
+                assert_eq!(
+                    engine.config().execution_strategy,
+                    ExecutionStrategy::Adaptive
+                );
             }
             Err(_) => {
                 // Expected to fail due to incomplete DAG builder implementation
@@ -600,24 +524,16 @@ mod tests {
     #[test]
     fn test_dag_engine_creation_with_config() {
         let ruleset = create_test_ruleset();
-        let config = crate::config::EngineConfig {
-            performance: crate::config::PerformanceConfig {
-                enable_dag_optimization: false,
-                dag_optimization_level: 0,
-                ..Default::default()
-            },
-            enable_parallel_processing: false,
-            parallel_config: crate::config::ParallelConfig::default(),
-            enable_prefilter: true,
-            ..Default::default()
-        };
+        let config = crate::config::EngineConfig::new()
+            .with_parallel_processing(false)
+            .with_prefilter(true);
 
         let engine = DagEngine::from_ruleset_with_config(ruleset, config);
 
         match engine {
             Ok(engine) => {
-                assert!(!engine.config().performance.enable_dag_optimization);
-                assert_eq!(engine.config().performance.dag_optimization_level, 0);
+                assert!(!engine.config().enable_parallel_processing);
+                assert!(engine.config().enable_prefilter);
             }
             Err(_) => {
                 // Expected to fail due to incomplete DAG builder implementation
@@ -641,6 +557,7 @@ mod tests {
         let ruleset = CompiledRuleset {
             primitive_map: HashMap::new(),
             primitives: Vec::new(),
+            rules: Vec::new(),
         };
 
         let primitive_map = DagEngine::build_primitive_map(&ruleset).unwrap();
@@ -716,49 +633,35 @@ mod tests {
     #[test]
     fn test_dag_engine_builder_creation() {
         let builder = DagEngineBuilder::new();
-        assert!(builder.config.performance.enable_dag_optimization);
-        assert_eq!(builder.config.performance.dag_optimization_level, 2);
-        assert!(!builder.config.enable_parallel_processing);
+        assert_eq!(builder.config.batch_size, 100);
+        assert_eq!(
+            builder.config.execution_strategy,
+            ExecutionStrategy::Adaptive
+        );
+        assert!(builder.config.enable_parallel_processing);
+        assert!(builder.config.enable_prefilter);
     }
 
     #[test]
     fn test_dag_engine_builder_default() {
         let builder = DagEngineBuilder::default();
-        assert!(builder.config.performance.enable_dag_optimization);
-        assert_eq!(builder.config.performance.dag_optimization_level, 2);
-        assert!(!builder.config.enable_parallel_processing);
-    }
-
-    #[test]
-    fn test_dag_engine_builder_with_optimization() {
-        let builder = DagEngineBuilder::new().with_optimization(false);
-        assert!(!builder.config.performance.enable_dag_optimization);
-
-        let builder = DagEngineBuilder::new().with_optimization(true);
-        assert!(builder.config.performance.enable_dag_optimization);
-    }
-
-    #[test]
-    fn test_dag_engine_builder_with_optimization_level() {
-        let builder = DagEngineBuilder::new().with_optimization_level(0);
-        assert_eq!(builder.config.performance.dag_optimization_level, 0);
-
-        let builder = DagEngineBuilder::new().with_optimization_level(3);
-        assert_eq!(builder.config.performance.dag_optimization_level, 3);
-
-        // Test clamping to max value
-        let builder = DagEngineBuilder::new().with_optimization_level(10);
-        assert_eq!(builder.config.performance.dag_optimization_level, 3);
+        assert_eq!(builder.config.batch_size, 100);
+        assert_eq!(
+            builder.config.execution_strategy,
+            ExecutionStrategy::Adaptive
+        );
+        assert!(builder.config.enable_parallel_processing);
+        assert!(builder.config.enable_prefilter);
     }
 
     #[test]
     fn test_dag_engine_builder_chaining() {
         let builder = DagEngineBuilder::new()
-            .with_optimization(false)
-            .with_optimization_level(1);
+            .with_parallel_processing(false)
+            .with_prefilter(false);
 
-        assert!(!builder.config.performance.enable_dag_optimization);
-        assert_eq!(builder.config.performance.dag_optimization_level, 1);
+        assert!(!builder.config.enable_parallel_processing);
+        assert!(!builder.config.enable_prefilter);
     }
 
     #[test]
@@ -770,14 +673,14 @@ detection:
         EventID: 4624
     condition: selection
 "#;
-        let builder = DagEngineBuilder::new().with_optimization(false);
+        let builder = DagEngineBuilder::new().with_parallel_processing(false);
 
         let result = builder.build(&[rule_yaml]);
 
         // May fail due to DAG builder implementation, but tests the interface
         match result {
             Ok(engine) => {
-                assert!(!engine.config().performance.enable_dag_optimization);
+                assert!(!engine.config().enable_parallel_processing);
             }
             Err(_) => {
                 // Expected to fail due to incomplete implementation
@@ -890,24 +793,22 @@ detection:
     }
 
     #[test]
-    fn test_dag_engine_config_optimization_levels() {
+    fn test_dag_engine_config_strategies() {
         let ruleset = create_test_ruleset();
 
-        // Test different optimization levels
-        for level in 0..=3 {
-            let config = crate::config::EngineConfig {
-                performance: crate::config::PerformanceConfig {
-                    dag_optimization_level: level,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
+        // Test different execution strategies
+        for strategy in [
+            ExecutionStrategy::Development,
+            ExecutionStrategy::Production,
+            ExecutionStrategy::Adaptive,
+        ] {
+            let config = crate::config::EngineConfig::new().with_execution_strategy(strategy);
 
             let result = DagEngine::from_ruleset_with_config(ruleset.clone(), config);
 
             match result {
                 Ok(engine) => {
-                    assert_eq!(engine.config().performance.dag_optimization_level, level);
+                    assert_eq!(engine.config().execution_strategy, strategy);
                 }
                 Err(_) => {
                     // Expected to fail due to incomplete implementation
@@ -936,6 +837,7 @@ detection:
         let ruleset = CompiledRuleset {
             primitive_map,
             primitives,
+            rules: Vec::new(),
         };
 
         let result = DagEngine::build_primitive_map(&ruleset);
@@ -1001,6 +903,7 @@ detection:
         let ruleset = CompiledRuleset {
             primitives,
             primitive_map: std::collections::HashMap::new(),
+            rules: Vec::new(),
         };
 
         let config = crate::config::EngineConfig {
@@ -1054,13 +957,9 @@ detection:
         let builder = DagEngine::builder();
 
         // Test that we can chain builder methods
-        let builder = builder
-            .with_optimization(true)
-            .with_prefilter(false)
-            .with_parallel_processing(true);
+        let builder = builder.with_prefilter(false).with_parallel_processing(true);
 
         // Verify the configuration was set correctly
-        assert!(builder.config.performance.enable_dag_optimization);
         assert!(!builder.config.enable_prefilter);
         assert!(builder.config.enable_parallel_processing);
     }

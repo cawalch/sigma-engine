@@ -23,6 +23,7 @@ fn test_prefilter_integration() {
     let ruleset = CompiledRuleset {
         primitives,
         primitive_map: std::collections::HashMap::new(),
+        rules: Vec::new(),
     };
 
     // Test with prefilter enabled
@@ -67,6 +68,7 @@ fn test_prefilter_vs_no_prefilter() {
     let ruleset = CompiledRuleset {
         primitives,
         primitive_map: std::collections::HashMap::new(),
+        rules: Vec::new(),
     };
 
     // Test with prefilter enabled

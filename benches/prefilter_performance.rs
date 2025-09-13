@@ -415,6 +415,7 @@ fn create_real_world_ruleset() -> CompiledRuleset {
     CompiledRuleset {
         primitives,
         primitive_map,
+        rules: Vec::new(), // Empty rules for benchmark
     }
 }
 
@@ -556,15 +557,9 @@ fn benchmark_soc_realistic_selectivity(c: &mut Criterion) {
     let ruleset = create_real_world_ruleset();
 
     // Create engines with and without prefilter
-    let config_with_prefilter = EngineConfig::new()
-        .with_prefilter(true)
-        .with_dag_optimization(true)
-        .with_dag_optimization_level(2);
+    let config_with_prefilter = EngineConfig::production().with_prefilter(true);
 
-    let config_without_prefilter = EngineConfig::new()
-        .with_prefilter(false)
-        .with_dag_optimization(true)
-        .with_dag_optimization_level(2);
+    let config_without_prefilter = EngineConfig::production().with_prefilter(false);
 
     let mut engine_with_prefilter =
         SigmaEngine::from_ruleset_with_config(ruleset.clone(), config_with_prefilter)

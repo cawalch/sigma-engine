@@ -101,10 +101,7 @@ pub use dag::evaluator::DagEvaluationResult as EngineResult;
 
 // Compiler and configuration
 pub use compiler::{Compiler, FieldMapping};
-pub use config::{
-    BatchConfig, EngineConfig, ExecutionStrategy, MemoryConfig, ParallelConfig, PerformanceConfig,
-    SecurityConfig,
-};
+pub use config::{EngineConfig, ExecutionStrategy};
 
 // Core types and errors
 pub use error::{Result, SigmaError};
