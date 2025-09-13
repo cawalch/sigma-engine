@@ -4,14 +4,15 @@ use super::types::{CompiledDag, DagNode, LogicalOp, NodeType};
 use crate::error::Result;
 use std::collections::{HashMap, HashSet};
 
-/// DAG optimizer that performs various optimization passes.
+/// Simplified DAG optimizer that performs essential optimization passes.
+///
+/// This optimizer focuses on proven optimizations that provide measurable
+/// performance benefits while reducing complexity.
 pub struct DagOptimizer {
     /// Enable common subexpression elimination
     enable_cse: bool,
     /// Enable dead code elimination
     enable_dce: bool,
-    /// Enable constant folding
-    enable_constant_folding: bool,
 }
 
 impl DagOptimizer {
@@ -20,7 +21,6 @@ impl DagOptimizer {
         Self {
             enable_cse: true,
             enable_dce: true,
-            enable_constant_folding: true,
         }
     }
 
@@ -36,182 +36,22 @@ impl DagOptimizer {
         self
     }
 
-    /// Enable or disable constant folding.
-    pub fn with_constant_folding(mut self, enable: bool) -> Self {
-        self.enable_constant_folding = enable;
-        self
-    }
-
-    /// Enable execution order optimization based on selectivity.
-    pub fn with_execution_order_optimization(self) -> Self {
-        // This is always enabled as it's a proven optimization
-        self
-    }
-
-    /// Optimize a compiled DAG.
+    /// Optimize a compiled DAG with essential optimizations.
     pub fn optimize(&self, mut dag: CompiledDag) -> Result<CompiledDag> {
-        // Perform optimization passes in order
-        if self.enable_constant_folding {
-            dag = self.constant_folding(dag)?;
-        }
-
+        // Apply common subexpression elimination to reduce duplicate computation
         if self.enable_cse {
             dag = self.common_subexpression_elimination(dag)?;
         }
 
-        // Additional optimization: factor out common subexpressions
-        if self.enable_cse {
-            dag = self.factor_common_subexpressions(dag)?;
-        }
-
+        // Remove unreachable nodes
         if self.enable_dce {
             dag = self.dead_code_elimination(dag)?;
         }
 
-        // Rebuild execution order after optimizations with selectivity optimization
+        // Always rebuild execution order for optimal performance
         dag = self.rebuild_execution_order_optimized(dag)?;
 
         Ok(dag)
-    }
-
-    /// Factor out common subexpressions to create shared computation nodes.
-    /// This is more aggressive than CSE and can create new intermediate nodes.
-    fn factor_common_subexpressions(&self, mut dag: CompiledDag) -> Result<CompiledDag> {
-        // Find groups of nodes that share common sub-patterns
-        let mut pattern_groups: HashMap<String, Vec<u32>> = HashMap::new();
-
-        for node in &dag.nodes {
-            if let NodeType::Logical {
-                operation: LogicalOp::And,
-            } = &node.node_type
-            {
-                // Look for AND nodes with multiple dependencies that could be factored
-                if node.dependencies.len() >= 2 {
-                    let structural_sig = Self::build_structural_signature(node, &dag, 0);
-                    pattern_groups
-                        .entry(structural_sig)
-                        .or_default()
-                        .push(node.id);
-                }
-            }
-        }
-
-        // Find patterns that appear multiple times
-        for (_pattern, node_ids) in pattern_groups {
-            if node_ids.len() >= 2 {
-                // Try to factor out common dependencies
-                if let Some(factored_dag) = self.try_factor_pattern(&dag, &node_ids)? {
-                    dag = factored_dag;
-                }
-            }
-        }
-
-        Ok(dag)
-    }
-
-    /// Try to factor out common dependencies from a group of similar nodes.
-    fn try_factor_pattern(
-        &self,
-        _dag: &CompiledDag,
-        _node_ids: &[u32],
-    ) -> Result<Option<CompiledDag>> {
-        // For now, return None to indicate no factoring was performed
-        // This is a placeholder for more sophisticated factoring logic
-        // that would analyze dependency patterns and create shared intermediate nodes
-        Ok(None)
-    }
-
-    /// Perform constant folding optimization.
-    ///
-    /// This pass identifies logical operations with constant operands
-    /// and replaces them with their constant results.
-    fn constant_folding(&self, mut dag: CompiledDag) -> Result<CompiledDag> {
-        let mut changed = true;
-        let mut iterations = 0;
-        const MAX_ITERATIONS: usize = 10; // Prevent infinite loops
-
-        // Iterate until no more changes or max iterations reached
-        while changed && iterations < MAX_ITERATIONS {
-            changed = false;
-            iterations += 1;
-
-            // Find nodes that can be constant folded
-            let mut nodes_to_fold = Vec::new();
-
-            for node in &dag.nodes {
-                if let NodeType::Logical { operation: _ } = &node.node_type {
-                    if let Some(constant_result) = self.evaluate_constant_expression(node, &dag) {
-                        nodes_to_fold.push((node.id, constant_result));
-                    }
-                }
-            }
-
-            // Apply constant folding
-            for (node_id, constant_result) in nodes_to_fold {
-                if self.fold_node_to_constant(&mut dag, node_id, constant_result)? {
-                    changed = true;
-                }
-            }
-        }
-
-        Ok(dag)
-    }
-
-    /// Evaluate a logical expression if all operands are constants.
-    fn evaluate_constant_expression(&self, node: &DagNode, dag: &CompiledDag) -> Option<bool> {
-        if let NodeType::Logical { operation } = &node.node_type {
-            let mut operand_values = Vec::new();
-
-            // Check if all dependencies are constant
-            for &dep_id in &node.dependencies {
-                if let Some(dep_node) = dag.get_node(dep_id) {
-                    if let Some(cached_result) = dep_node.cached_result {
-                        operand_values.push(cached_result);
-                    } else {
-                        // Not all operands are constant
-                        return None;
-                    }
-                } else {
-                    return None;
-                }
-            }
-
-            // Evaluate the logical operation
-            match operation {
-                LogicalOp::And => Some(operand_values.iter().all(|&v| v)),
-                LogicalOp::Or => Some(operand_values.iter().any(|&v| v)),
-                LogicalOp::Not => {
-                    if operand_values.len() == 1 {
-                        Some(!operand_values[0])
-                    } else {
-                        None // Invalid NOT operation
-                    }
-                }
-            }
-        } else {
-            None
-        }
-    }
-
-    /// Fold a node to a constant value.
-    fn fold_node_to_constant(
-        &self,
-        dag: &mut CompiledDag,
-        node_id: u32,
-        constant_value: bool,
-    ) -> Result<bool> {
-        // Find the node to fold
-        if let Some(node) = dag.nodes.iter_mut().find(|n| n.id == node_id) {
-            // Cache the constant result
-            node.cached_result = Some(constant_value);
-
-            // Clear dependencies since this is now a constant
-            node.dependencies.clear();
-
-            return Ok(true);
-        }
-
-        Ok(false)
     }
 
     /// Perform common subexpression elimination.
@@ -283,193 +123,11 @@ impl DagOptimizer {
         Ok(dag)
     }
 
-    /// Rebuild execution order with selectivity-based optimization.
-    /// This implements the fail-fast optimization by prioritizing high-selectivity primitives.
+    /// Rebuild execution order using topological sorting.
+    /// This ensures dependencies are respected while maintaining simplicity.
     fn rebuild_execution_order_optimized(&self, mut dag: CompiledDag) -> Result<CompiledDag> {
-        // First get the basic topological order
-        let basic_order = self.topological_sort(&dag)?;
-
-        // Then optimize the order within topological constraints
-        dag.execution_order = self.optimize_execution_order(&dag, basic_order)?;
+        dag.execution_order = self.topological_sort(&dag)?;
         Ok(dag)
-    }
-
-    /// Optimize execution order to prioritize high-selectivity primitives first.
-    /// This implements advanced fail-fast optimization by understanding logical dependencies.
-    fn optimize_execution_order(
-        &self,
-        dag: &CompiledDag,
-        basic_order: Vec<u32>,
-    ) -> Result<Vec<u32>> {
-        // First, identify critical paths for fail-fast optimization
-        let critical_paths = self.identify_critical_paths(dag);
-
-        let mut optimized_order = Vec::new();
-        let mut remaining_nodes: HashSet<u32> = basic_order.into_iter().collect();
-        let mut processed_nodes = HashSet::new();
-
-        // Process nodes in waves, respecting dependencies and critical paths
-        while !remaining_nodes.is_empty() {
-            // Find nodes that can be executed (all dependencies satisfied)
-            let mut ready_nodes: Vec<u32> = remaining_nodes
-                .iter()
-                .filter(|&&node_id| {
-                    if let Some(node) = dag.get_node(node_id) {
-                        node.dependencies
-                            .iter()
-                            .all(|&dep_id| processed_nodes.contains(&dep_id))
-                    } else {
-                        false
-                    }
-                })
-                .copied()
-                .collect();
-
-            if ready_nodes.is_empty() {
-                // This shouldn't happen with a valid DAG, but handle it gracefully
-                break;
-            }
-
-            // Sort ready nodes by fail-fast priority
-            ready_nodes.sort_by(|&a, &b| {
-                let priority_a = self.calculate_fail_fast_priority(dag, a, &critical_paths);
-                let priority_b = self.calculate_fail_fast_priority(dag, b, &critical_paths);
-
-                // Higher priority = execute first
-                priority_b
-                    .partial_cmp(&priority_a)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            // Add ready nodes to execution order
-            for node_id in ready_nodes {
-                optimized_order.push(node_id);
-                remaining_nodes.remove(&node_id);
-                processed_nodes.insert(node_id);
-            }
-        }
-
-        Ok(optimized_order)
-    }
-
-    /// Identify critical paths in the DAG for fail-fast optimization.
-    /// Critical paths are sequences of AND operations where early failure can skip large subtrees.
-    fn identify_critical_paths(&self, dag: &CompiledDag) -> Vec<Vec<u32>> {
-        let mut critical_paths = Vec::new();
-
-        // Find all AND nodes that are part of critical paths
-        for node in &dag.nodes {
-            if let NodeType::Logical {
-                operation: LogicalOp::And,
-            } = &node.node_type
-            {
-                // This is an AND node - check if it's part of a critical path
-                if self.is_critical_and_node(dag, node.id) {
-                    let path = self.build_critical_path(dag, node.id);
-                    if !path.is_empty() {
-                        critical_paths.push(path);
-                    }
-                }
-            }
-        }
-
-        critical_paths
-    }
-
-    /// Check if an AND node is critical for fail-fast optimization.
-    fn is_critical_and_node(&self, dag: &CompiledDag, node_id: u32) -> bool {
-        if let Some(node) = dag.get_node(node_id) {
-            if let NodeType::Logical {
-                operation: LogicalOp::And,
-            } = &node.node_type
-            {
-                // An AND node is critical if it has multiple dependencies that could be expensive
-                return node.dependencies.len() >= 2;
-            }
-        }
-        false
-    }
-
-    /// Build a critical path starting from an AND node.
-    fn build_critical_path(&self, dag: &CompiledDag, and_node_id: u32) -> Vec<u32> {
-        let mut path = Vec::new();
-
-        if let Some(and_node) = dag.get_node(and_node_id) {
-            // Add the AND node itself
-            path.push(and_node_id);
-
-            // Add all its dependencies (these should be evaluated in order of selectivity)
-            for &dep_id in &and_node.dependencies {
-                path.push(dep_id);
-            }
-        }
-
-        path
-    }
-
-    /// Calculate fail-fast priority for a node based on critical paths.
-    /// Higher priority means the node should be executed earlier.
-    fn calculate_fail_fast_priority(
-        &self,
-        dag: &CompiledDag,
-        node_id: u32,
-        critical_paths: &[Vec<u32>],
-    ) -> f64 {
-        let base_selectivity = self.estimate_node_selectivity(dag, node_id);
-
-        // Check if this node is part of any critical path
-        let mut critical_path_bonus = 0.0;
-        for path in critical_paths {
-            if let Some(position) = path.iter().position(|&id| id == node_id) {
-                // Nodes earlier in critical paths get higher priority
-                // First dependency of AND gets highest bonus
-                if position == 1 {
-                    critical_path_bonus += 1000.0; // Very high priority for first AND dependency
-                } else if position > 1 {
-                    critical_path_bonus += 100.0 / position as f64; // Decreasing priority for later dependencies
-                }
-            }
-        }
-
-        // Convert selectivity to priority (lower selectivity = higher priority)
-        let selectivity_priority = 1.0 / (base_selectivity + 0.01);
-
-        selectivity_priority + critical_path_bonus
-    }
-
-    /// Estimate the selectivity of a node for execution order optimization.
-    /// Lower values indicate higher selectivity (more likely to fail fast).
-    fn estimate_node_selectivity(&self, dag: &CompiledDag, node_id: u32) -> f64 {
-        if let Some(node) = dag.get_node(node_id) {
-            match &node.node_type {
-                NodeType::Primitive { primitive_id } => {
-                    // Estimate selectivity based on primitive characteristics
-                    // This is a heuristic - in practice you'd use historical data
-
-                    // For now, use primitive_id as a proxy (lower IDs = more selective)
-                    // In a real implementation, you'd analyze the primitive's match type and values
-                    0.1 + (*primitive_id as f64 * 0.1).min(0.8)
-                }
-                NodeType::Logical { operation } => {
-                    // Logical operations have medium selectivity
-                    match operation {
-                        LogicalOp::And => 0.3, // AND operations are more selective
-                        LogicalOp::Or => 0.7,  // OR operations are less selective
-                        LogicalOp::Not => 0.5, // NOT operations have medium selectivity
-                    }
-                }
-                NodeType::Result { .. } => {
-                    // Result nodes should be executed last
-                    1.0
-                }
-                NodeType::Prefilter { .. } => {
-                    // Prefilter nodes should be executed first
-                    0.01
-                }
-            }
-        } else {
-            0.5 // Default selectivity for unknown nodes
-        }
     }
 
     /// Build a signature string for an expression to enable CSE.
@@ -509,40 +167,6 @@ impl DagOptimizer {
                 // Prefilter nodes are unique by their patterns
                 format!("F{prefilter_id}:{pattern_count}")
             }
-        }
-    }
-
-    /// Build a structural signature that captures the shape of the expression tree.
-    /// This enables detection of structurally similar expressions that could benefit
-    /// from factorization optimizations.
-    fn build_structural_signature(node: &DagNode, dag: &CompiledDag, depth: usize) -> String {
-        if depth > 10 {
-            return "DEEP".to_string(); // Prevent infinite recursion
-        }
-
-        match &node.node_type {
-            NodeType::Primitive { .. } => "P".to_string(),
-            NodeType::Logical { operation } => {
-                let mut dep_structures: Vec<String> = node
-                    .dependencies
-                    .iter()
-                    .filter_map(|&dep_id| {
-                        dag.get_node(dep_id).map(|dep_node| {
-                            Self::build_structural_signature(dep_node, dag, depth + 1)
-                        })
-                    })
-                    .collect();
-
-                dep_structures.sort();
-
-                match operation {
-                    LogicalOp::And => format!("AND[{}]", dep_structures.join(",")),
-                    LogicalOp::Or => format!("OR[{}]", dep_structures.join(",")),
-                    LogicalOp::Not => format!("NOT[{}]", dep_structures.join(",")),
-                }
-            }
-            NodeType::Result { .. } => "R".to_string(),
-            NodeType::Prefilter { .. } => "F".to_string(),
         }
     }
 
@@ -717,7 +341,6 @@ mod tests {
         let optimizer = DagOptimizer::new();
         assert!(optimizer.enable_cse);
         assert!(optimizer.enable_dce);
-        assert!(optimizer.enable_constant_folding);
     }
 
     #[test]
@@ -725,30 +348,22 @@ mod tests {
         let optimizer = DagOptimizer::default();
         assert!(optimizer.enable_cse);
         assert!(optimizer.enable_dce);
-        assert!(optimizer.enable_constant_folding);
     }
 
     #[test]
     fn test_dag_optimizer_configuration() {
-        let optimizer = DagOptimizer::new()
-            .with_cse(false)
-            .with_dce(false)
-            .with_constant_folding(false);
+        let optimizer = DagOptimizer::new().with_cse(false).with_dce(false);
 
         assert!(!optimizer.enable_cse);
         assert!(!optimizer.enable_dce);
-        assert!(!optimizer.enable_constant_folding);
     }
 
     #[test]
     fn test_dag_optimizer_partial_configuration() {
-        let optimizer = DagOptimizer::new()
-            .with_cse(false)
-            .with_constant_folding(true);
+        let optimizer = DagOptimizer::new().with_cse(false);
 
         assert!(!optimizer.enable_cse);
         assert!(optimizer.enable_dce); // Should remain default
-        assert!(optimizer.enable_constant_folding);
     }
 
     #[test]
@@ -855,286 +470,6 @@ mod tests {
 
         let signature = DagOptimizer::build_expression_signature(&node, &dag);
         assert_eq!(signature, "R123");
-    }
-
-    #[test]
-    fn test_build_structural_signature_primitive() {
-        let _optimizer = DagOptimizer::new();
-        let dag = CompiledDag::new();
-        let node = DagNode::new(0, NodeType::Primitive { primitive_id: 42 });
-
-        let signature = DagOptimizer::build_structural_signature(&node, &dag, 0);
-        assert_eq!(signature, "P");
-    }
-
-    #[test]
-    fn test_build_structural_signature_logical() {
-        let _optimizer = DagOptimizer::new();
-        let mut dag = CompiledDag::new();
-
-        dag.add_node(DagNode::new(0, NodeType::Primitive { primitive_id: 1 }));
-        dag.add_node(DagNode::new(1, NodeType::Primitive { primitive_id: 2 }));
-
-        let mut and_node = DagNode::new(
-            2,
-            NodeType::Logical {
-                operation: LogicalOp::And,
-            },
-        );
-        and_node.dependencies = vec![0, 1];
-
-        let signature = DagOptimizer::build_structural_signature(&and_node, &dag, 0);
-        assert!(signature.starts_with("AND["));
-        assert!(signature.contains("P"));
-    }
-
-    #[test]
-    fn test_build_structural_signature_deep_recursion() {
-        let _optimizer = DagOptimizer::new();
-        let dag = CompiledDag::new();
-        let node = DagNode::new(0, NodeType::Primitive { primitive_id: 1 });
-
-        let signature = DagOptimizer::build_structural_signature(&node, &dag, 15);
-        assert_eq!(signature, "DEEP");
-    }
-
-    #[test]
-    fn test_build_structural_signature_result() {
-        let _optimizer = DagOptimizer::new();
-        let dag = CompiledDag::new();
-        let node = DagNode::new(0, NodeType::Result { rule_id: 123 });
-
-        let signature = DagOptimizer::build_structural_signature(&node, &dag, 0);
-        assert_eq!(signature, "R");
-    }
-
-    #[test]
-    fn test_evaluate_constant_expression_and_true() {
-        let optimizer = DagOptimizer::new();
-        let mut dag = CompiledDag::new();
-
-        // Create nodes with cached results
-        let mut node1 = DagNode::new(0, NodeType::Primitive { primitive_id: 1 });
-        node1.cached_result = Some(true);
-        let mut node2 = DagNode::new(1, NodeType::Primitive { primitive_id: 2 });
-        node2.cached_result = Some(true);
-        dag.add_node(node1);
-        dag.add_node(node2);
-
-        let mut and_node = DagNode::new(
-            2,
-            NodeType::Logical {
-                operation: LogicalOp::And,
-            },
-        );
-        and_node.dependencies = vec![0, 1];
-
-        let result = optimizer.evaluate_constant_expression(&and_node, &dag);
-        assert_eq!(result, Some(true));
-    }
-
-    #[test]
-    fn test_evaluate_constant_expression_and_false() {
-        let optimizer = DagOptimizer::new();
-        let mut dag = CompiledDag::new();
-
-        let mut node1 = DagNode::new(0, NodeType::Primitive { primitive_id: 1 });
-        node1.cached_result = Some(true);
-        let mut node2 = DagNode::new(1, NodeType::Primitive { primitive_id: 2 });
-        node2.cached_result = Some(false);
-        dag.add_node(node1);
-        dag.add_node(node2);
-
-        let mut and_node = DagNode::new(
-            2,
-            NodeType::Logical {
-                operation: LogicalOp::And,
-            },
-        );
-        and_node.dependencies = vec![0, 1];
-
-        let result = optimizer.evaluate_constant_expression(&and_node, &dag);
-        assert_eq!(result, Some(false));
-    }
-
-    #[test]
-    fn test_evaluate_constant_expression_or_true() {
-        let optimizer = DagOptimizer::new();
-        let mut dag = CompiledDag::new();
-
-        let mut node1 = DagNode::new(0, NodeType::Primitive { primitive_id: 1 });
-        node1.cached_result = Some(false);
-        let mut node2 = DagNode::new(1, NodeType::Primitive { primitive_id: 2 });
-        node2.cached_result = Some(true);
-        dag.add_node(node1);
-        dag.add_node(node2);
-
-        let mut or_node = DagNode::new(
-            2,
-            NodeType::Logical {
-                operation: LogicalOp::Or,
-            },
-        );
-        or_node.dependencies = vec![0, 1];
-
-        let result = optimizer.evaluate_constant_expression(&or_node, &dag);
-        assert_eq!(result, Some(true));
-    }
-
-    #[test]
-    fn test_evaluate_constant_expression_or_false() {
-        let optimizer = DagOptimizer::new();
-        let mut dag = CompiledDag::new();
-
-        let mut node1 = DagNode::new(0, NodeType::Primitive { primitive_id: 1 });
-        node1.cached_result = Some(false);
-        let mut node2 = DagNode::new(1, NodeType::Primitive { primitive_id: 2 });
-        node2.cached_result = Some(false);
-        dag.add_node(node1);
-        dag.add_node(node2);
-
-        let mut or_node = DagNode::new(
-            2,
-            NodeType::Logical {
-                operation: LogicalOp::Or,
-            },
-        );
-        or_node.dependencies = vec![0, 1];
-
-        let result = optimizer.evaluate_constant_expression(&or_node, &dag);
-        assert_eq!(result, Some(false));
-    }
-
-    #[test]
-    fn test_evaluate_constant_expression_not_true() {
-        let optimizer = DagOptimizer::new();
-        let mut dag = CompiledDag::new();
-
-        let mut node1 = DagNode::new(0, NodeType::Primitive { primitive_id: 1 });
-        node1.cached_result = Some(false);
-        dag.add_node(node1);
-
-        let mut not_node = DagNode::new(
-            1,
-            NodeType::Logical {
-                operation: LogicalOp::Not,
-            },
-        );
-        not_node.dependencies = vec![0];
-
-        let result = optimizer.evaluate_constant_expression(&not_node, &dag);
-        assert_eq!(result, Some(true));
-    }
-
-    #[test]
-    fn test_evaluate_constant_expression_not_false() {
-        let optimizer = DagOptimizer::new();
-        let mut dag = CompiledDag::new();
-
-        let mut node1 = DagNode::new(0, NodeType::Primitive { primitive_id: 1 });
-        node1.cached_result = Some(true);
-        dag.add_node(node1);
-
-        let mut not_node = DagNode::new(
-            1,
-            NodeType::Logical {
-                operation: LogicalOp::Not,
-            },
-        );
-        not_node.dependencies = vec![0];
-
-        let result = optimizer.evaluate_constant_expression(&not_node, &dag);
-        assert_eq!(result, Some(false));
-    }
-
-    #[test]
-    fn test_evaluate_constant_expression_not_invalid() {
-        let optimizer = DagOptimizer::new();
-        let mut dag = CompiledDag::new();
-
-        let mut node1 = DagNode::new(0, NodeType::Primitive { primitive_id: 1 });
-        node1.cached_result = Some(true);
-        let mut node2 = DagNode::new(1, NodeType::Primitive { primitive_id: 2 });
-        node2.cached_result = Some(false);
-        dag.add_node(node1);
-        dag.add_node(node2);
-
-        let mut not_node = DagNode::new(
-            2,
-            NodeType::Logical {
-                operation: LogicalOp::Not,
-            },
-        );
-        not_node.dependencies = vec![0, 1]; // Invalid: NOT with multiple dependencies
-
-        let result = optimizer.evaluate_constant_expression(&not_node, &dag);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_evaluate_constant_expression_non_constant_dependency() {
-        let optimizer = DagOptimizer::new();
-        let mut dag = CompiledDag::new();
-
-        let mut node1 = DagNode::new(0, NodeType::Primitive { primitive_id: 1 });
-        node1.cached_result = Some(true);
-        let node2 = DagNode::new(1, NodeType::Primitive { primitive_id: 2 }); // No cached result
-        dag.add_node(node1);
-        dag.add_node(node2);
-
-        let mut and_node = DagNode::new(
-            2,
-            NodeType::Logical {
-                operation: LogicalOp::And,
-            },
-        );
-        and_node.dependencies = vec![0, 1];
-
-        let result = optimizer.evaluate_constant_expression(&and_node, &dag);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_evaluate_constant_expression_non_logical_node() {
-        let optimizer = DagOptimizer::new();
-        let dag = CompiledDag::new();
-        let node = DagNode::new(0, NodeType::Primitive { primitive_id: 1 });
-
-        let result = optimizer.evaluate_constant_expression(&node, &dag);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_fold_node_to_constant() {
-        let optimizer = DagOptimizer::new();
-        let mut dag = CompiledDag::new();
-
-        let mut node = DagNode::new(
-            0,
-            NodeType::Logical {
-                operation: LogicalOp::And,
-            },
-        );
-        node.dependencies = vec![1, 2];
-        dag.add_node(node);
-
-        let result = optimizer.fold_node_to_constant(&mut dag, 0, true).unwrap();
-        assert!(result);
-
-        let folded_node = dag.get_node(0).unwrap();
-        assert_eq!(folded_node.cached_result, Some(true));
-        assert!(folded_node.dependencies.is_empty());
-    }
-
-    #[test]
-    fn test_fold_node_to_constant_nonexistent() {
-        let optimizer = DagOptimizer::new();
-        let mut dag = CompiledDag::new();
-
-        let result = optimizer
-            .fold_node_to_constant(&mut dag, 999, true)
-            .unwrap();
-        assert!(!result);
     }
 
     #[test]
@@ -1252,29 +587,6 @@ mod tests {
     }
 
     #[test]
-    fn test_try_factor_pattern() {
-        let optimizer = DagOptimizer::new();
-        let dag = create_test_dag();
-        let node_ids = vec![2, 3];
-
-        let result = optimizer.try_factor_pattern(&dag, &node_ids).unwrap();
-
-        // Currently returns None as it's a placeholder
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_constant_folding_no_constants() {
-        let optimizer = DagOptimizer::new();
-        let dag = create_test_dag();
-
-        let optimized = optimizer.constant_folding(dag).unwrap();
-
-        // Should not change anything since no constants
-        assert_eq!(optimized.nodes.len(), 4);
-    }
-
-    #[test]
     fn test_common_subexpression_elimination_no_duplicates() {
         let optimizer = DagOptimizer::new();
         let dag = create_test_dag();
@@ -1353,22 +665,8 @@ mod tests {
     }
 
     #[test]
-    fn test_factor_common_subexpressions() {
-        let optimizer = DagOptimizer::new();
-        let dag = create_test_dag();
-
-        let optimized = optimizer.factor_common_subexpressions(dag).unwrap();
-
-        // Should not change much since factoring is not fully implemented
-        assert!(!optimized.nodes.is_empty());
-    }
-
-    #[test]
     fn test_optimize_with_all_passes_disabled() {
-        let optimizer = DagOptimizer::new()
-            .with_cse(false)
-            .with_dce(false)
-            .with_constant_folding(false);
+        let optimizer = DagOptimizer::new().with_cse(false).with_dce(false);
 
         let dag = create_test_dag();
         let original_node_count = dag.nodes.len();
@@ -1381,10 +679,7 @@ mod tests {
 
     #[test]
     fn test_optimize_with_selective_passes() {
-        let optimizer = DagOptimizer::new()
-            .with_cse(true)
-            .with_dce(false)
-            .with_constant_folding(false);
+        let optimizer = DagOptimizer::new().with_cse(true).with_dce(false);
 
         let dag = create_test_dag();
 
