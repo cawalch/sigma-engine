@@ -1,7 +1,8 @@
 //! DAG builder for converting IR bytecode to optimized DAG representation.
 
 use super::prefilter::LiteralPrefilter;
-use super::types::{CompiledDag, DagNode, NodeId, NodeType};
+use super::types::{CompiledDag, DagNode, LogicalOp, NodeId, NodeType};
+use crate::compiler::parser::{parse_tokens, tokenize_condition, ConditionAst};
 use crate::error::{Result, SigmaError};
 use crate::ir::{CompiledRuleset, Primitive, PrimitiveId, RuleId};
 use std::collections::{HashMap, VecDeque};
@@ -65,8 +66,20 @@ impl DagBuilder {
             self.primitive_nodes.insert(primitive_id, node_id);
         }
 
-        // Note: DAG nodes are now created directly from YAML compilation
-        // No bytecode chunks to convert
+        // Second pass: For each rule, build condition subgraph and result node
+        for rule in &ruleset.rules {
+            // Tokenize and parse the condition string into AST
+            if let Ok(tokens) = tokenize_condition(&rule.condition) {
+                if let Ok(ast) = parse_tokens(&tokens, &rule.selections) {
+                    if let Ok(root_id) = self.build_condition_subgraph(&ast, &rule.selections) {
+                        // Create result node and wire dependency
+                        let result_node = self.create_result_node(rule.rule_id);
+                        self.add_dependency(result_node, root_id);
+                        self.rule_result_nodes.insert(rule.rule_id, result_node);
+                    }
+                }
+            }
+        }
 
         self
     }
@@ -148,6 +161,44 @@ impl DagBuilder {
         node_id
     }
 
+    /// Ensure or create primitive node for a given primitive id, returning its node id.
+    fn ensure_primitive_node(&mut self, primitive_id: PrimitiveId) -> NodeId {
+        if let Some(&nid) = self.primitive_nodes.get(&primitive_id) {
+            return nid;
+        }
+        let nid = self.create_primitive_node(primitive_id);
+        self.primitive_nodes.insert(primitive_id, nid);
+        nid
+    }
+
+    /// Create a new logical node.
+    fn create_logical_node(&mut self, operation: LogicalOp) -> NodeId {
+        let node_id = self.next_node_id;
+        self.next_node_id += 1;
+        let node = DagNode::new(node_id, NodeType::Logical { operation });
+        self.nodes.push(node);
+        node_id
+    }
+
+    /// Create a new result node.
+    fn create_result_node(&mut self, rule_id: RuleId) -> NodeId {
+        let node_id = self.next_node_id;
+        self.next_node_id += 1;
+        let node = DagNode::new(node_id, NodeType::Result { rule_id });
+        self.nodes.push(node);
+        node_id
+    }
+
+    /// Add a dependency relationship between nodes (dependent depends on dependency).
+    fn add_dependency(&mut self, dependent_id: NodeId, dependency_id: NodeId) {
+        if let Some(dep_node) = self.nodes.get_mut(dependent_id as usize) {
+            dep_node.add_dependency(dependency_id);
+        }
+        if let Some(base_node) = self.nodes.get_mut(dependency_id as usize) {
+            base_node.add_dependent(dependent_id);
+        }
+    }
+
     /// Create a new prefilter node.
     fn create_prefilter_node(&mut self, prefilter: &LiteralPrefilter) -> NodeId {
         let node_id = self.next_node_id;
@@ -163,6 +214,151 @@ impl DagBuilder {
         self.nodes.push(node);
 
         node_id
+    }
+
+    /// Build a condition subgraph for a rule and return the root node id.
+    fn build_condition_subgraph(
+        &mut self,
+        ast: &ConditionAst,
+        selection_map: &HashMap<String, Vec<PrimitiveId>>,
+    ) -> Result<NodeId> {
+        match ast {
+            ConditionAst::Identifier(name) => {
+                let primitive_ids = selection_map.get(name).ok_or_else(|| {
+                    SigmaError::CompilationError(format!("Unknown selection: {name}"))
+                })?;
+                if primitive_ids.is_empty() {
+                    return Err(SigmaError::CompilationError(format!(
+                        "Empty selection: {name}"
+                    )));
+                }
+                if primitive_ids.len() == 1 {
+                    Ok(self.ensure_primitive_node(primitive_ids[0]))
+                } else {
+                    // Implicit AND of all primitives in selection
+                    let and_node = self.create_logical_node(LogicalOp::And);
+                    for &pid in primitive_ids {
+                        let pnode = self.ensure_primitive_node(pid);
+                        self.add_dependency(and_node, pnode);
+                    }
+                    Ok(and_node)
+                }
+            }
+            ConditionAst::And(l, r) => {
+                let ln = self.build_condition_subgraph(l, selection_map)?;
+                let rn = self.build_condition_subgraph(r, selection_map)?;
+                let and_node = self.create_logical_node(LogicalOp::And);
+                self.add_dependency(and_node, ln);
+                self.add_dependency(and_node, rn);
+                Ok(and_node)
+            }
+            ConditionAst::Or(l, r) => {
+                let ln = self.build_condition_subgraph(l, selection_map)?;
+                let rn = self.build_condition_subgraph(r, selection_map)?;
+                let or_node = self.create_logical_node(LogicalOp::Or);
+                self.add_dependency(or_node, ln);
+                self.add_dependency(or_node, rn);
+                Ok(or_node)
+            }
+            ConditionAst::Not(o) => {
+                let on = self.build_condition_subgraph(o, selection_map)?;
+                let not_node = self.create_logical_node(LogicalOp::Not);
+                self.add_dependency(not_node, on);
+                Ok(not_node)
+            }
+            ConditionAst::OneOfThem => {
+                let or_node = self.create_logical_node(LogicalOp::Or);
+                let mut any = false;
+                for primitive_ids in selection_map.values() {
+                    for &pid in primitive_ids {
+                        let pnode = self.ensure_primitive_node(pid);
+                        self.add_dependency(or_node, pnode);
+                        any = true;
+                    }
+                }
+                if !any {
+                    return Err(SigmaError::CompilationError(
+                        "No primitives found for 'one of them'".to_string(),
+                    ));
+                }
+                Ok(or_node)
+            }
+            ConditionAst::AllOfThem => {
+                let and_node = self.create_logical_node(LogicalOp::And);
+                let mut any = false;
+                for primitive_ids in selection_map.values() {
+                    for &pid in primitive_ids {
+                        let pnode = self.ensure_primitive_node(pid);
+                        self.add_dependency(and_node, pnode);
+                        any = true;
+                    }
+                }
+                if !any {
+                    return Err(SigmaError::CompilationError(
+                        "No primitives found for 'all of them'".to_string(),
+                    ));
+                }
+                Ok(and_node)
+            }
+            ConditionAst::OneOfPattern(pattern) => {
+                let or_node = self.create_logical_node(LogicalOp::Or);
+                let mut matched = false;
+                for (sel, primitive_ids) in selection_map {
+                    if sel.contains(pattern) {
+                        for &pid in primitive_ids {
+                            let pnode = self.ensure_primitive_node(pid);
+                            self.add_dependency(or_node, pnode);
+                            matched = true;
+                        }
+                    }
+                }
+                if !matched {
+                    return Err(SigmaError::CompilationError(format!(
+                        "No selections found matching pattern: {pattern}"
+                    )));
+                }
+                Ok(or_node)
+            }
+            ConditionAst::AllOfPattern(pattern) => {
+                let and_node = self.create_logical_node(LogicalOp::And);
+                let mut matched = false;
+                for (sel, primitive_ids) in selection_map {
+                    if sel.contains(pattern) {
+                        for &pid in primitive_ids {
+                            let pnode = self.ensure_primitive_node(pid);
+                            self.add_dependency(and_node, pnode);
+                            matched = true;
+                        }
+                    }
+                }
+                if !matched {
+                    return Err(SigmaError::CompilationError(format!(
+                        "No selections found matching pattern: {pattern}"
+                    )));
+                }
+                Ok(and_node)
+            }
+            ConditionAst::CountOfPattern(_count, pattern) => {
+                // Simplified as one-of-pattern for now
+                let or_node = self.create_logical_node(LogicalOp::Or);
+                let mut matched = false;
+                for (sel, primitive_ids) in selection_map {
+                    if sel.contains(pattern) {
+                        for &pid in primitive_ids {
+                            let pnode = self.ensure_primitive_node(pid);
+                            self.add_dependency(or_node, pnode);
+                            matched = true;
+                        }
+                    }
+                }
+                if !matched {
+                    return Err(SigmaError::CompilationError(format!(
+                        "No selections found matching pattern: {pattern}"
+                    )));
+                }
+                Ok(or_node)
+            }
+        }
     }
 
     /// Perform optimization passes on the DAG.
@@ -207,8 +403,12 @@ impl DagBuilder {
         self.primitive_nodes = optimized_dag.primitive_map;
         self.rule_result_nodes = optimized_dag.rule_results;
 
-        // Update next_node_id to be safe
-        self.next_node_id = self.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
+        // Update next_node_id to be safe, preserving zero-based contiguous IDs invariant
+        if self.nodes.is_empty() {
+            self.next_node_id = 0;
+        } else {
+            self.next_node_id = self.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
+        }
     }
 
     /// Perform topological sort to determine execution order.

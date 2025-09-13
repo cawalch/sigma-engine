@@ -6,7 +6,7 @@
 //! The compiler is organized into several sub-modules:
 //! - [`field_mapping`] - Field name normalization and taxonomy support
 //! - [`parser`] - Tokenization and parsing of SIGMA condition expressions
-//! - [`dag_codegen`] - DAG generation from parsed ASTs
+
 //!
 //! # Examples
 //!
@@ -41,15 +41,13 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
-pub mod dag_codegen;
 pub mod field_mapping;
 pub mod parser;
 
 pub use field_mapping::FieldMapping;
 
-use crate::dag::CompiledDag;
 use crate::error::{Result, SigmaError};
-use crate::ir::{CompiledRuleset, Primitive, PrimitiveId, RuleId};
+use crate::ir::{CompiledRule, CompiledRuleset, Primitive, PrimitiveId, RuleId};
 
 use serde_yaml::Value;
 use std::collections::HashMap;
@@ -75,6 +73,7 @@ pub struct Compiler {
     current_selection_map: HashMap<String, Vec<PrimitiveId>>,
     field_mapping: FieldMapping,
     next_rule_id: RuleId,
+    compiled_rules: Vec<CompiledRule>,
 }
 
 impl Compiler {
@@ -96,6 +95,7 @@ impl Compiler {
             current_selection_map: HashMap::new(),
             field_mapping: FieldMapping::new(),
             next_rule_id: 0,
+            compiled_rules: Vec::new(),
         }
     }
 
@@ -118,6 +118,7 @@ impl Compiler {
             current_selection_map: HashMap::new(),
             field_mapping,
             next_rule_id: 0,
+            compiled_rules: Vec::new(),
         }
     }
 
@@ -210,6 +211,15 @@ impl Compiler {
         // Parse detection section to extract primitives
         self.parse_detection_value(&detection_yaml)?;
 
+        // Extract condition string and record compiled rule
+        let condition = Self::extract_condition_string(&detection_yaml)?;
+        let selections = self.current_selection_map.clone();
+        self.compiled_rules.push(CompiledRule {
+            rule_id,
+            selections,
+            condition,
+        });
+
         Ok(rule_id)
     }
 
@@ -299,7 +309,7 @@ impl Compiler {
     /// # Ok::<(), sigma_engine::SigmaError>(())
     /// ```
     pub fn compile_ruleset(&mut self, rule_yamls: &[&str]) -> Result<CompiledRuleset> {
-        // Compile each rule to extract primitives
+        // Compile each rule to extract primitives and record rule metadata
         for rule_yaml in rule_yamls {
             self.compile_rule(rule_yaml)?;
         }
@@ -308,215 +318,8 @@ impl Compiler {
         Ok(CompiledRuleset {
             primitive_map: self.primitive_map.clone(),
             primitives: self.primitives.clone(),
+            rules: self.compiled_rules.clone(),
         })
-    }
-
-    /// Compile a single SIGMA rule directly to DAG nodes.
-    ///
-    /// This method bypasses bytecode generation and creates DAG nodes directly
-    /// from the parsed AST, providing better performance and simpler architecture.
-    ///
-    /// # Arguments
-    /// * `rule_yaml` - The SIGMA rule in YAML format
-    ///
-    /// # Returns
-    /// A DAG generation result containing nodes and metadata.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use sigma_engine::Compiler;
-    ///
-    /// let mut compiler = Compiler::new();
-    /// let rule_yaml = r#"
-    /// title: Test Rule
-    /// logsource:
-    ///     category: test
-    /// detection:
-    ///     selection:
-    ///         EventID: 4624
-    ///     condition: selection
-    /// "#;
-    ///
-    /// let ruleset = compiler.into_ruleset();
-    /// # Ok::<(), sigma_engine::SigmaError>(())
-    /// ```
-    fn compile_rule_to_dag(&mut self, rule_yaml: &str) -> Result<dag_codegen::DagGenerationResult> {
-        self.current_selection_map.clear();
-
-        // Use optimized selective YAML parsing for better performance
-        let (rule_id, detection_yaml) = self.parse_rule_selective(rule_yaml)?;
-
-        // Parse detection section to extract primitives
-        self.parse_detection_value(&detection_yaml)?;
-
-        // Parse condition and generate DAG directly
-        let condition_str = detection_yaml
-            .get("condition")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| SigmaError::CompilationError("Missing condition".to_string()))?;
-
-        let tokens = parser::tokenize_condition(condition_str)?;
-        let ast = parser::parse_tokens(&tokens, &self.current_selection_map)?;
-
-        // Generate DAG directly from AST
-        dag_codegen::generate_dag_from_ast(&ast, &self.current_selection_map, rule_id)
-    }
-
-    /// Compile multiple SIGMA rules directly to a complete DAG.
-    ///
-    /// This method compiles multiple rules and combines them into a single
-    /// optimized DAG with shared primitive nodes for maximum performance.
-    ///
-    /// # Arguments
-    /// * `rule_yamls` - Vector of SIGMA rules in YAML format
-    ///
-    /// # Returns
-    /// A compiled DAG ready for execution.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use sigma_engine::Compiler;
-    ///
-    /// let mut compiler = Compiler::new();
-    /// let rules = vec![
-    ///     r#"
-    ///     title: Rule 1
-    ///     detection:
-    ///         selection:
-    ///             EventID: 4624
-    ///         condition: selection
-    ///     "#,
-    ///     r#"
-    ///     title: Rule 2
-    ///     detection:
-    ///         selection:
-    ///             EventID: 4625
-    ///         condition: selection
-    ///     "#,
-    /// ];
-    ///
-    /// let dag = compiler.compile_rules_to_dag(&rules)?;
-    /// # Ok::<(), sigma_engine::SigmaError>(())
-    /// ```
-    pub fn compile_rules_to_dag(&mut self, rule_yamls: &[&str]) -> Result<CompiledDag> {
-        use crate::dag::types::CompiledDag;
-        use std::collections::HashMap;
-
-        let mut all_nodes = Vec::new();
-        let mut all_primitive_nodes = HashMap::new();
-        let mut all_rule_results = HashMap::new();
-        let mut node_id_offset = 0u32;
-
-        // Compile each rule to DAG nodes
-        for rule_yaml in rule_yamls {
-            let dag_result = self.compile_rule_to_dag(rule_yaml)?;
-
-            // Adjust node IDs to avoid conflicts
-            let mut adjusted_nodes = Vec::new();
-            let mut id_mapping = HashMap::new();
-
-            let nodes_len = dag_result.nodes.len();
-            for node in &dag_result.nodes {
-                let new_id = node.id + node_id_offset;
-                id_mapping.insert(node.id, new_id);
-
-                let mut adjusted_node = node.clone();
-                adjusted_node.id = new_id;
-                adjusted_nodes.push(adjusted_node);
-            }
-
-            // Update dependencies with new IDs
-            for node in &mut adjusted_nodes {
-                for dep_id in &mut node.dependencies {
-                    if let Some(&new_id) = id_mapping.get(dep_id) {
-                        *dep_id = new_id;
-                    }
-                }
-                for dep_id in &mut node.dependents {
-                    if let Some(&new_id) = id_mapping.get(dep_id) {
-                        *dep_id = new_id;
-                    }
-                }
-            }
-
-            // Merge primitive nodes (shared across rules)
-            for (primitive_id, old_node_id) in dag_result.primitive_nodes {
-                if let Some(&new_node_id) = id_mapping.get(&old_node_id) {
-                    all_primitive_nodes.insert(primitive_id, new_node_id);
-                }
-            }
-
-            // Add rule result mapping
-            if let Some(&new_result_id) = id_mapping.get(&dag_result.result_node_id) {
-                all_rule_results.insert(dag_result.rule_id, new_result_id);
-            }
-
-            // Add adjusted nodes
-            all_nodes.extend(adjusted_nodes);
-            node_id_offset += nodes_len as u32;
-        }
-
-        // Perform topological sort for execution order
-        let execution_order = self.topological_sort_nodes(&all_nodes)?;
-
-        Ok(CompiledDag {
-            nodes: all_nodes,
-            execution_order,
-            primitive_map: all_primitive_nodes,
-            rule_results: all_rule_results,
-            result_buffer_size: node_id_offset as usize,
-        })
-    }
-
-    /// Perform topological sort on DAG nodes.
-    fn topological_sort_nodes(&self, nodes: &[crate::dag::types::DagNode]) -> Result<Vec<u32>> {
-        use std::collections::VecDeque;
-
-        let mut in_degree = vec![0; nodes.len()];
-        let mut queue = VecDeque::new();
-        let mut result = Vec::new();
-
-        // Calculate in-degrees
-        for node in nodes {
-            for &dep_id in &node.dependencies {
-                if (dep_id as usize) < in_degree.len() {
-                    in_degree[node.id as usize] += 1;
-                }
-            }
-        }
-
-        // Find nodes with no dependencies
-        for (node_id, &degree) in in_degree.iter().enumerate() {
-            if degree == 0 && node_id < nodes.len() {
-                queue.push_back(node_id as u32);
-            }
-        }
-
-        // Process nodes in topological order
-        while let Some(node_id) = queue.pop_front() {
-            result.push(node_id);
-
-            if let Some(node) = nodes.get(node_id as usize) {
-                for &dependent_id in &node.dependents {
-                    if (dependent_id as usize) < in_degree.len() {
-                        in_degree[dependent_id as usize] -= 1;
-                        if in_degree[dependent_id as usize] == 0 {
-                            queue.push_back(dependent_id);
-                        }
-                    }
-                }
-            }
-        }
-
-        if result.len() != nodes.len() {
-            return Err(SigmaError::CompilationError(
-                "Cycle detected in DAG".to_string(),
-            ));
-        }
-
-        Ok(result)
     }
 
     /// Get the compiled ruleset with all primitives.
@@ -534,6 +337,7 @@ impl Compiler {
         CompiledRuleset {
             primitive_map: self.primitive_map,
             primitives: self.primitives,
+            rules: self.compiled_rules,
         }
     }
 
@@ -555,6 +359,23 @@ impl Compiler {
     ///
     /// This method processes the detection section without requiring the full YAML document,
     /// providing better performance for selective parsing scenarios.
+    /// Extract the condition string from the detection mapping.
+    fn extract_condition_string(detection: &Value) -> Result<String> {
+        if let Value::Mapping(map) = detection {
+            if let Some(cond_val) = map.get(Value::from("condition")) {
+                if let Some(s) = cond_val.as_str() {
+                    return Ok(s.to_string());
+                }
+                return Err(SigmaError::CompilationError(
+                    "Condition must be a string".to_string(),
+                ));
+            }
+        }
+        Err(SigmaError::CompilationError(
+            "Missing detection.condition".to_string(),
+        ))
+    }
+
     fn parse_detection_value(&mut self, detection: &Value) -> Result<()> {
         if let Value::Mapping(detection_map) = detection {
             for (key, value) in detection_map {
@@ -930,106 +751,5 @@ detection:
 
         assert_eq!(id1, id2); // Should be deduplicated
         assert_eq!(compiler.primitive_count(), 1);
-    }
-
-    #[test]
-    fn test_compile_rule_to_dag_basic() {
-        let mut compiler = Compiler::new();
-        let rule_yaml = r#"
-title: Test Rule
-logsource:
-    category: test
-detection:
-    selection:
-        EventID: 4624
-    condition: selection
-"#;
-
-        let result = compiler.compile_rule_to_dag(rule_yaml);
-        assert!(result.is_ok());
-
-        let dag_result = result.unwrap();
-        assert_eq!(dag_result.rule_id, 0); // Default rule ID
-        assert!(!dag_result.nodes.is_empty());
-        assert!(!dag_result.primitive_nodes.is_empty());
-    }
-
-    #[test]
-    fn test_compile_rules_to_dag_multiple() {
-        let mut compiler = Compiler::new();
-        let rules = vec![
-            r#"
-id: 1
-title: Rule 1
-detection:
-    selection:
-        EventID: 4624
-    condition: selection
-"#,
-            r#"
-id: 2
-title: Rule 2
-detection:
-    selection:
-        EventID: 4625
-    condition: selection
-"#,
-        ];
-
-        let result = compiler.compile_rules_to_dag(&rules);
-        assert!(result.is_ok());
-
-        let dag = result.unwrap();
-        assert!(!dag.nodes.is_empty());
-        assert!(!dag.primitive_map.is_empty());
-        assert_eq!(dag.rule_results.len(), 2); // Two rules
-    }
-
-    #[test]
-    fn test_direct_yaml_to_dag_integration() {
-        use crate::dag::DagEngine;
-        use serde_json::json;
-
-        let mut compiler = Compiler::new();
-        let rule_yaml = r#"
-title: Test Direct YAML to DAG
-id: 42
-detection:
-    selection:
-        EventID: 4624
-        User: "admin"
-    condition: selection
-"#;
-
-        // Compile rule directly to DAG
-        let dag_result = compiler.compile_rule_to_dag(rule_yaml).unwrap();
-        assert_eq!(dag_result.rule_id, 42);
-        assert!(!dag_result.nodes.is_empty());
-        assert!(!dag_result.primitive_nodes.is_empty());
-
-        // Compile multiple rules to a complete DAG
-        let dag = compiler.compile_rules_to_dag(&[rule_yaml]).unwrap();
-
-        // Create a compiled ruleset from the DAG (for DagEngine compatibility)
-        let ruleset = compiler.into_ruleset();
-
-        // Create a DAG engine and test execution
-        let mut engine =
-            DagEngine::from_ruleset_with_config(ruleset, crate::EngineConfig::default()).unwrap();
-
-        // Test with matching event
-        let matching_event = json!({
-            "EventID": "4624",
-            "User": "admin"
-        });
-        let _result = engine.evaluate(&matching_event).unwrap();
-        // Note: This test may not work as expected because the engine was created from an empty ruleset
-        // The DAG compilation and engine creation need to be better integrated
-
-        // For now, just verify the compilation worked
-        assert!(!dag.nodes.is_empty());
-        assert!(!dag.primitive_map.is_empty());
-        assert_eq!(dag.rule_results.len(), 1);
-        assert!(dag.rule_results.contains_key(&42));
     }
 }

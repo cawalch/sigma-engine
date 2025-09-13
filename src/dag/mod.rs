@@ -103,6 +103,7 @@ mod tests {
         let ruleset = CompiledRuleset {
             primitive_map: HashMap::new(),
             primitives: Vec::new(),
+            rules: Vec::new(),
         };
         assert_eq!(estimate_sharing_potential(&ruleset), 0.0);
     }
@@ -121,6 +122,7 @@ mod tests {
         let ruleset = CompiledRuleset {
             primitive_map,
             primitives: vec![primitive],
+            rules: Vec::new(),
         };
         assert_eq!(estimate_sharing_potential(&ruleset), 0.0);
     }
@@ -147,6 +149,7 @@ mod tests {
         let ruleset = CompiledRuleset {
             primitive_map,
             primitives: vec![primitive1, primitive2],
+            rules: Vec::new(),
         };
 
         let potential = estimate_sharing_potential(&ruleset);
@@ -175,6 +178,7 @@ mod tests {
         let ruleset = CompiledRuleset {
             primitive_map,
             primitives,
+            rules: Vec::new(),
         };
 
         let potential = estimate_sharing_potential(&ruleset);

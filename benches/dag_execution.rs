@@ -139,7 +139,7 @@ detection:
     {
         let mut compiler = Compiler::new();
         let ruleset = compiler.compile_ruleset(&rules).unwrap();
-        let config = EngineConfig::default().with_dag_optimization(false);
+        let config = EngineConfig::development(); // Development mode for testing
         let mut engine = SigmaEngine::from_ruleset_with_config(ruleset, config).unwrap();
 
         group.bench_function("no_optimization", |b| {
@@ -154,7 +154,7 @@ detection:
     {
         let mut compiler = Compiler::new();
         let ruleset = compiler.compile_ruleset(&rules).unwrap();
-        let config = EngineConfig::default().with_dag_optimization(true);
+        let config = EngineConfig::production(); // Production mode with optimization
         let mut engine = SigmaEngine::from_ruleset_with_config(ruleset, config).unwrap();
 
         group.bench_function("with_optimization", |b| {
